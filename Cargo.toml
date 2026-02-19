@@ -2,5 +2,43 @@
 name = "sujood"
 version = "0.1.0"
 edition = "2024"
+authors = ["Sabir Khan <simplysabir@gmail.com>"]
+description = "A beautiful terminal companion for Islamic practice tracking"
+license = "MIT"
 
 [dependencies]
+# CLI
+clap = { version = "4.5", features = ["derive", "cargo"] }
+anyhow = "1.0"
+thiserror = "1.0"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+tui-big-text = "0.6"
+
+# Storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Config
+toml = "0.8"
+directories = "5.0"
+
+# Prayer times (fully offline)
+salah = "0.7"
+
+# Hijri date
+hijri_date = "0.5"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Utilities
+log = "0.4"
+env_logger = "0.11"
+unicode-width = "0.1"
+
+[dev-dependencies]
+tempfile = "3.8"
