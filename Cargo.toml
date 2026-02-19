@@ -1,6 +1,6 @@
 [package]
 name = "sujood"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 authors = ["Sabir Khan <simplysabir@gmail.com>"]
 description = "A beautiful terminal companion for Islamic practice tracking"
