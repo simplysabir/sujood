@@ -1,12 +1,12 @@
-use anyhow::Result;
-use chrono::Local;
+use anyhow::{Result, anyhow};
+use chrono::{DateTime, FixedOffset};
 use crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
-    Frame,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -14,11 +14,13 @@ use std::collections::HashMap;
 use crate::config::AppConfig;
 use crate::db::repository::{DhikrRepo, PrayerRepo, QadaRepo, QuranRepo, StatsRepo};
 use crate::models::{DailyStats, DhikrDef, DhikrLog, DhikrType, Prayer, PrayerType, Streak};
-use crate::utils::hijri::today_hijri_string;
 use crate::prayer_times::PrayerCalculator;
 use crate::tui::events::{Event, EventHandler};
+use crate::tui::terminal::TerminalGuard;
 use crate::tui::theme;
 use crate::tui::widgets::{adhkar, header, next_prayer, prayers, qada, quran, statusbar, streak};
+use crate::utils::hijri::hijri_string_for_date;
+use crate::utils::time::{format_date, now_at_offset};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum View {
@@ -48,11 +50,12 @@ pub struct App {
     pub should_quit: bool,
     pub input_mode: InputMode,
     pub input_buffer: String,
-    pub input_error: Option<String>,   // shown in quran popup on bad input
-    pub show_qada_overlay: bool,       // `q` toggles this
+    pub input_error: Option<String>,
+    pub show_qada_overlay: bool,
 
-    // Cached state (refreshed on tick/action)
+    // Date and display strings are all derived from Sujood's configured clock.
     pub today_str: String,
+    pub gregorian_str: String,
     pub hijri_str: String,
     pub prayers: Vec<Prayer>,
     pub dhikr_defs: Vec<DhikrDef>,
@@ -63,15 +66,22 @@ pub struct App {
     pub streak: Streak,
     pub weekly_grid: Vec<DailyStats>,
     pub next_prayer_info: Option<(PrayerType, i64)>,
+
+    // Visible feedback for database/calculation failures and completed actions.
+    pub status_message: Option<String>,
+    pub status_is_error: bool,
 }
 
 impl App {
-    pub fn new(config: AppConfig) -> Self {
-        let today = Local::now().date_naive();
-        let today_str = today.format("%Y-%m-%d").to_string();
-        let hijri_str = today_hijri_string(config.salah.hijri_offset);
+    pub fn new(config: AppConfig) -> Result<Self> {
+        config.validate()?;
+        let now = now_at_offset(config.salah.timezone_offset)?;
+        let today = now.date_naive();
+        let today_str = format_date(today);
+        let gregorian_str = today.format("%A, %b %d, %Y").to_string();
+        let hijri_str = hijri_string_for_date(today, config.salah.hijri_offset)?;
 
-        App {
+        Ok(App {
             view: View::Dashboard,
             config,
             focus_section: FocusSection::Prayers,
@@ -82,6 +92,7 @@ impl App {
             input_error: None,
             show_qada_overlay: false,
             today_str,
+            gregorian_str,
             hijri_str,
             prayers: Vec::new(),
             dhikr_defs: Vec::new(),
@@ -92,73 +103,99 @@ impl App {
             streak: Streak::default(),
             weekly_grid: Vec::new(),
             next_prayer_info: None,
-        }
+            status_message: None,
+            status_is_error: false,
+        })
     }
 
     pub fn load(&mut self, conn: &Connection) -> Result<()> {
-        // Ensure today's prayer rows exist
-        PrayerRepo::ensure_today_rows(conn, &self.today_str)?;
+        let now = now_at_offset(self.config.salah.timezone_offset)?;
+        self.load_at(conn, now)
+    }
 
-        // Load prayers + times from cache
+    fn load_at(&mut self, conn: &Connection, now: DateTime<FixedOffset>) -> Result<()> {
+        let today = now.date_naive();
+        let today_str = format_date(today);
+        let gregorian_str = today.format("%A, %b %d, %Y").to_string();
+        let hijri_str = hijri_string_for_date(today, self.config.salah.hijri_offset)?;
+
+        // Ensure rows exist for the same configured-local date used everywhere below.
+        PrayerRepo::ensure_today_rows(conn, &today_str)?;
+
         let calc = self.make_calculator()?;
-        let today = Local::now().date_naive();
-        let cached_times = calc.get_cached_or_compute(conn, today).ok();
-
-        let mut db_prayers = PrayerRepo::get_by_date(conn, &self.today_str)?;
-        if let Some(times) = &cached_times {
-            for p in &mut db_prayers {
-                p.time = Some(match p.prayer_type {
-                    PrayerType::Fajr => times.fajr,
-                    PrayerType::Zuhr => times.zuhr,
-                    PrayerType::Asr => times.asr,
-                    PrayerType::Maghrib => times.maghrib,
-                    PrayerType::Isha => times.isha,
-                });
-            }
+        let cached_times = calc.get_cached_or_compute(conn, today)?;
+        let mut prayers = PrayerRepo::get_by_date(conn, &today_str)?;
+        for prayer in &mut prayers {
+            prayer.time = Some(match prayer.prayer_type {
+                PrayerType::Fajr => cached_times.fajr,
+                PrayerType::Zuhr => cached_times.zuhr,
+                PrayerType::Asr => cached_times.asr,
+                PrayerType::Maghrib => cached_times.maghrib,
+                PrayerType::Isha => cached_times.isha,
+            });
         }
-        self.prayers = db_prayers;
 
-        // Dhikr
-        self.dhikr_defs = DhikrRepo::get_active_definitions(conn)?;
-        let logs = DhikrRepo::get_log_for_date(conn, &self.today_str)?;
-        self.dhikr_logs = logs.into_iter().map(|l| (l.dhikr_id, l)).collect();
+        let dhikr_defs = DhikrRepo::get_active_definitions(conn)?;
+        let logs = DhikrRepo::get_log_for_date(conn, &today_str)?;
+        let dhikr_logs = logs.into_iter().map(|log| (log.dhikr_id, log)).collect();
 
-        // Qada
-        self.qada_count = QadaRepo::count_pending(conn)?;
+        let qada_count = QadaRepo::count_pending(conn)?;
+        let quran_today = QuranRepo::get_today(conn, &today_str)?;
+        let week_start = format_date(today - chrono::Duration::days(6));
+        let quran_weekly = QuranRepo::get_weekly_total(conn, &week_start, &today_str)?;
+        let streak = StatsRepo::calculate_streak(conn, today)?;
+        let weekly_grid = StatsRepo::get_weekly_grid(conn, &week_start, &today_str)?;
+        let next_prayer_info = calc.get_next_prayer(conn, now)?;
 
-        // Quran
-        self.quran_today = QuranRepo::get_today(conn, &self.today_str)?;
-        let week_start = (Local::now().date_naive() - chrono::Duration::days(6))
-            .format("%Y-%m-%d")
-            .to_string();
-        self.quran_weekly = QuranRepo::get_weekly_total(conn, &week_start, &self.today_str)?;
-
-        // Streak
-        self.streak = StatsRepo::calculate_streak(conn)?;
-
-        // Weekly grid
-        let week_end = &self.today_str;
-        self.weekly_grid = StatsRepo::get_weekly_grid(conn, &week_start, week_end)?;
-
-        // Next prayer
-        let now_time = Local::now().time();
-        self.next_prayer_info = calc
-            .get_next_prayer(conn, today, now_time)
-            .ok()
-            .flatten();
-
+        // Publish the refreshed snapshot only after every read/calculation succeeds.
+        self.today_str = today_str;
+        self.gregorian_str = gregorian_str;
+        self.hijri_str = hijri_str;
+        self.prayers = prayers;
+        self.dhikr_defs = dhikr_defs;
+        self.dhikr_logs = dhikr_logs;
+        self.qada_count = qada_count;
+        self.quran_today = quran_today;
+        self.quran_weekly = quran_weekly;
+        self.streak = streak;
+        self.weekly_grid = weekly_grid;
+        self.next_prayer_info = next_prayer_info;
         Ok(())
     }
 
     pub fn tick(&mut self, conn: &Connection) {
-        // Refresh countdown
-        let today = Local::now().date_naive();
-        let now_time = Local::now().time();
-        if let Ok(calc) = self.make_calculator() {
-            self.next_prayer_info = calc
-                .get_next_prayer(conn, today, now_time)
-                .ok()
-                .flatten();
+        match now_at_offset(self.config.salah.timezone_offset) {
+            Ok(now) => self.tick_at(conn, now),
+            Err(error) => self.set_error("Unable to read configured local time", error),
+        }
+    }
+
+    /// Tick using an explicit configured-local instant. Separating the clock
+    /// source makes midnight rollover deterministic in regression tests.
+    pub fn tick_at(&mut self, conn: &Connection, now: DateTime<FixedOffset>) {
+        let next_date = format_date(now.date_naive());
+        if next_date != self.today_str {
+            match self.load_at(conn, now) {
+                Ok(()) => self.set_success("New tracking day loaded"),
+                Err(error) => self.set_error("Unable to load the new tracking day", error),
+            }
+            return;
+        }
+
+        match self
+            .make_calculator()
+            .and_then(|calculator| calculator.get_next_prayer(conn, now))
+        {
+            Ok(next_prayer) => {
+                self.next_prayer_info = next_prayer;
+                if self.status_message.as_deref().is_some_and(|message| {
+                    message.starts_with("Unable to refresh prayer countdown:")
+                }) {
+                    self.status_message = None;
+                    self.status_is_error = false;
+                }
+            }
+            Err(error) => self.set_error("Unable to refresh prayer countdown", error),
         }
     }
 
@@ -172,10 +209,53 @@ impl App {
         )
     }
 
+    fn set_error(&mut self, context: &str, error: impl std::fmt::Display) {
+        self.status_message = Some(format!("{context}: {error}"));
+        self.status_is_error = true;
+    }
+
+    fn set_success(&mut self, message: impl Into<String>) {
+        self.status_message = Some(message.into());
+        self.status_is_error = false;
+    }
+
+    fn refresh_after_action(&mut self, conn: &Connection, success_message: &str) {
+        match self.load(conn) {
+            Ok(()) => self.set_success(success_message),
+            Err(error) => self.set_error("Action saved, but dashboard refresh failed", error),
+        }
+    }
+
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent, conn: &Connection) {
         // Only handle actual key presses — ignore release/repeat events from some terminals
         if key.kind != KeyEventKind::Press {
             return;
+        }
+        self.status_message = None;
+        self.status_is_error = false;
+        match now_at_offset(self.config.salah.timezone_offset) {
+            Ok(now) => {
+                if format_date(now.date_naive()) != self.today_str {
+                    self.tick_at(conn, now);
+                    if format_date(now.date_naive()) != self.today_str && key_mutates_data(key) {
+                        // Do not let a user action be written to a stale date if
+                        // refreshing the new day's dashboard failed.
+                        return;
+                    }
+
+                    fn key_mutates_data(key: crossterm::event::KeyEvent) -> bool {
+                        match key.code {
+                            KeyCode::Char('m') | KeyCode::Char('M') | KeyCode::Char('d') => true,
+                            KeyCode::Enter => true,
+                            _ => false,
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                self.set_error("Unable to read configured local time", error);
+                return;
+            }
         }
         match self.input_mode {
             InputMode::QuranInput => self.handle_quran_input(key, conn),
@@ -294,16 +374,18 @@ impl App {
                     self.input_error = Some("Enter a number first (e.g. 2 or 0.5)".to_string());
                     return;
                 }
+
                 match trimmed.parse::<f64>() {
-                    Ok(pages) if pages > 0.0 => {
-                        let _ = QuranRepo::log_pages(conn, &self.today_str, pages);
-                        let _ = self.load(conn);
+                    Ok(pages) => {
+                        if let Err(error) = QuranRepo::log_pages(conn, &self.today_str, pages) {
+                            self.input_error = Some(format!("Could not save Quran pages: {error}"));
+                            return;
+                        }
+
                         self.input_mode = InputMode::Normal;
                         self.input_buffer.clear();
                         self.input_error = None;
-                    }
-                    Ok(_) => {
-                        self.input_error = Some("Pages must be greater than 0".to_string());
+                        self.refresh_after_action(conn, "Quran reading saved");
                     }
                     Err(_) => {
                         self.input_error = Some(format!("'{}' is not a valid number", trimmed));
@@ -323,47 +405,74 @@ impl App {
     }
 
     fn mark_focused_done(&mut self, conn: &Connection) {
-        if self.focus_section == FocusSection::Prayers {
-            if let Some(prayer) = self.prayers.get(self.focus_idx) {
-                let _ = PrayerRepo::mark_status(
-                    conn,
-                    prayer.prayer_type.as_str(),
-                    &self.today_str,
-                    "done",
-                );
-                let _ = self.load(conn);
-            }
+        if self.focus_section != FocusSection::Prayers {
+            return;
+        }
+        let Some(prayer_type) = self
+            .prayers
+            .get(self.focus_idx)
+            .map(|prayer| prayer.prayer_type.as_str().to_string())
+        else {
+            return;
+        };
+
+        match PrayerRepo::mark_status(conn, &prayer_type, &self.today_str, "done") {
+            Ok(()) => self.refresh_after_action(conn, "Prayer marked as done"),
+            Err(error) => self.set_error("Could not mark prayer as done", error),
         }
     }
 
     fn mark_focused_missed(&mut self, conn: &Connection) {
-        if self.focus_section == FocusSection::Prayers {
-            if let Some(prayer) = self.prayers.get(self.focus_idx) {
-                let prayer_type = prayer.prayer_type.as_str().to_string();
-                let date = self.today_str.clone();
-                let _ = PrayerRepo::mark_status(conn, &prayer_type, &date, "missed");
-                let _ = QadaRepo::add_entry(conn, &prayer_type, &date);
-                let _ = self.load(conn);
+        if self.focus_section != FocusSection::Prayers {
+            return;
+        }
+        let Some(prayer_type) = self
+            .prayers
+            .get(self.focus_idx)
+            .map(|prayer| prayer.prayer_type.as_str().to_string())
+        else {
+            return;
+        };
+
+        match PrayerRepo::mark_missed_with_qada(conn, &prayer_type, &self.today_str) {
+            Ok(added) => {
+                let message = if added {
+                    "Prayer marked missed and added to Qada"
+                } else {
+                    "Prayer marked missed; its Qada entry already exists"
+                };
+                self.refresh_after_action(conn, message);
             }
+            Err(error) => self.set_error("Could not mark prayer as missed", error),
         }
     }
 
     fn toggle_focused_dhikr(&mut self, conn: &Connection) {
-        // focus_section is guaranteed to be Dhikr by the caller
-        if let Some(def) = self.dhikr_defs.get(self.focus_idx) {
-            let log = self.dhikr_logs.get(&def.id);
-            match def.dhikr_type {
-                DhikrType::Checkbox => {
-                    let was_done = log.map(|l| l.completed).unwrap_or(false);
-                    let _ = DhikrRepo::upsert_log(conn, def.id, &self.today_str, 1, !was_done);
-                }
-                DhikrType::Counter => {
-                    let count = log.map(|l| l.count).unwrap_or(0) + 1;
-                    let completed = count >= def.target_count;
-                    let _ = DhikrRepo::upsert_log(conn, def.id, &self.today_str, count, completed);
+        let Some(def) = self.dhikr_defs.get(self.focus_idx) else {
+            return;
+        };
+
+        let log = self.dhikr_logs.get(&def.id);
+        let update = match def.dhikr_type {
+            DhikrType::Checkbox => {
+                let was_done = log.map(|entry| entry.completed).unwrap_or(false);
+                DhikrRepo::upsert_log(conn, def.id, &self.today_str, 1, !was_done)
+            }
+            DhikrType::Counter => {
+                let current = log.map(|entry| entry.count).unwrap_or(0);
+                match current.checked_add(1) {
+                    Some(count) => {
+                        let completed = count >= def.target_count;
+                        DhikrRepo::upsert_log(conn, def.id, &self.today_str, count, completed)
+                    }
+                    None => Err(anyhow!("Dhikr count exceeds the supported numeric range")),
                 }
             }
-            let _ = self.load(conn);
+        };
+
+        match update {
+            Ok(()) => self.refresh_after_action(conn, "Adhkar progress saved"),
+            Err(error) => self.set_error("Could not save Adhkar progress", error),
         }
     }
 
@@ -390,10 +499,7 @@ impl App {
         let area = frame.area();
 
         // Clear background
-        frame.render_widget(
-            Block::default().style(theme::base()),
-            area,
-        );
+        frame.render_widget(Block::default().style(theme::base()), area);
 
         let outer_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -405,10 +511,15 @@ impl App {
             .split(area);
 
         // Header
-        header::render(frame, outer_chunks[0], &self.hijri_str);
+        header::render(frame, outer_chunks[0], &self.hijri_str, &self.gregorian_str);
 
         // Status bar
-        statusbar::render(frame, outer_chunks[2]);
+        statusbar::render(
+            frame,
+            outer_chunks[2],
+            self.status_message.as_deref(),
+            self.status_is_error,
+        );
 
         // Body split into columns
         let body = outer_chunks[1];
@@ -424,9 +535,9 @@ impl App {
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(9),  // prayers
-                Constraint::Length(8),  // adhkar
-                Constraint::Length(3),  // quran
+                Constraint::Length(9), // prayers
+                Constraint::Length(8), // adhkar
+                Constraint::Length(3), // quran
             ])
             .split(left);
 
@@ -462,9 +573,9 @@ impl App {
         let right_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(9),  // next prayer
-                Constraint::Length(7),  // streak
-                Constraint::Min(0),     // qada
+                Constraint::Length(9), // next prayer
+                Constraint::Length(7), // streak
+                Constraint::Min(0),    // qada
             ])
             .split(right);
 
@@ -515,10 +626,7 @@ impl App {
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Quran today:       ", theme::dim()),
-                Span::styled(
-                    format!("{} pages", self.quran_today),
-                    theme::amber(),
-                ),
+                Span::styled(format!("{} pages", self.quran_today), theme::amber()),
             ]),
             Line::from(vec![
                 Span::styled("  Quran this week:   ", theme::dim()),
@@ -531,8 +639,17 @@ impl App {
 
         let mut all_lines = lines;
 
-        // Weekly heatmap
+        // Weekly heatmap. A missing date is distinct from a day with five
+        // prayer records that are all still pending.
         for stat in &self.weekly_grid {
+            if stat.prayers_total == 0 {
+                all_lines.push(Line::from(vec![
+                    Span::styled("  ············  ", theme::dim()),
+                    Span::styled(format!("{}  No records", stat.date), theme::dim()),
+                ]));
+                continue;
+            }
+
             let icon = match stat.prayers_done {
                 5 => Span::styled("  ████████████  ", theme::green()),
                 4 => Span::styled("  █████████░░░  ", theme::green()),
@@ -544,7 +661,10 @@ impl App {
             all_lines.push(Line::from(vec![
                 icon,
                 Span::styled(
-                    format!("{}  {}/5", stat.date, stat.prayers_done),
+                    format!(
+                        "{}  {}/{}",
+                        stat.date, stat.prayers_done, stat.prayers_total
+                    ),
                     theme::dim(),
                 ),
             ]));
@@ -552,18 +672,20 @@ impl App {
 
         let paragraph = Paragraph::new(all_lines);
         frame.render_widget(paragraph, chunks[1]);
+
+        statusbar::render(
+            frame,
+            chunks[2],
+            self.status_message.as_deref(),
+            self.status_is_error,
+        );
     }
 
     fn draw_help_overlay(&self, frame: &mut Frame) {
         let area = frame.area();
 
         // Center a help box
-        let popup_area = Rect {
-            x: area.width / 4,
-            y: area.height / 4,
-            width: area.width / 2,
-            height: area.height / 2,
-        };
+        let popup_area = centered_popup(area, area.width / 2, area.height / 2);
 
         frame.render_widget(Clear, popup_area);
 
@@ -626,12 +748,7 @@ impl App {
         let area = frame.area();
         let height = if self.input_error.is_some() { 7 } else { 5 };
 
-        let popup_area = Rect {
-            x: area.width / 4,
-            y: area.height / 2 - 3,
-            width: area.width / 2,
-            height,
-        };
+        let popup_area = centered_popup(area, area.width / 2, height);
 
         frame.render_widget(Clear, popup_area);
 
@@ -639,8 +756,11 @@ impl App {
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Pages read today: ", theme::dim()),
-                Span::styled(self.input_buffer.as_str(), theme::gold().add_modifier(Modifier::BOLD)),
-                Span::styled("█", theme::amber()),  // block cursor
+                Span::styled(
+                    self.input_buffer.as_str(),
+                    theme::gold().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("█", theme::amber()), // block cursor
             ]),
             Line::from(""),
             Line::from(Span::styled(
@@ -677,12 +797,7 @@ impl App {
     fn draw_qada_overlay(&self, frame: &mut Frame) {
         let area = frame.area();
 
-        let popup_area = Rect {
-            x: area.width / 4,
-            y: area.height / 4,
-            width: area.width / 2,
-            height: (area.height / 2).min(20),
-        };
+        let popup_area = centered_popup(area, area.width / 2, (area.height / 2).min(20));
 
         frame.render_widget(Clear, popup_area);
 
@@ -718,10 +833,7 @@ impl App {
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  [any key] close",
-            theme::dim(),
-        )));
+        lines.push(Line::from(Span::styled("  [any key] close", theme::dim())));
 
         let block = Block::default()
             .title(Span::styled(" Qada Queue ", theme::gold()))
@@ -737,10 +849,11 @@ impl App {
 
 /// Run the TUI event loop.
 pub fn run(conn: Connection, config: AppConfig) -> Result<()> {
-    let mut app = App::new(config);
+    let mut app = App::new(config)?;
     app.load(&conn)?;
 
     let mut terminal = ratatui::init();
+    let _terminal_guard = TerminalGuard;
     let events = EventHandler::new(500);
 
     loop {
@@ -756,9 +869,19 @@ pub fn run(conn: Connection, config: AppConfig) -> Result<()> {
             Event::Tick => {
                 app.tick(&conn);
             }
+            Event::Error(error) => return Err(anyhow!(error)),
         }
     }
-
-    ratatui::restore();
     Ok(())
+}
+
+fn centered_popup(area: Rect, requested_width: u16, requested_height: u16) -> Rect {
+    let width = requested_width.min(area.width);
+    let height = requested_height.min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
 }

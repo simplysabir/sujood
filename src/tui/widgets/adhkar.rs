@@ -1,12 +1,12 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem},
-    Frame,
 };
 
-use crate::models::{DhikrDef, DhikrLog, DhikrType};
+use crate::models::{DhikrDef, DhikrFrequency, DhikrLog, DhikrType};
 use crate::tui::theme;
 
 pub fn render(
@@ -18,7 +18,7 @@ pub fn render(
     focused: bool,
 ) {
     let block = Block::default()
-        .title(Span::styled(" Adhkar ", theme::gold()))
+        .title(Span::styled(" Adhkar (W = Mon-Sun) ", theme::gold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(if focused {
@@ -67,8 +67,16 @@ pub fn render(
                 }
             };
 
+            let frequency_span = match &def.frequency {
+                DhikrFrequency::Daily => Span::raw("  "),
+                DhikrFrequency::Weekly => {
+                    Span::styled("W ", theme::amber().add_modifier(Modifier::BOLD))
+                }
+            };
+
             let line = Line::from(vec![
                 Span::styled(format!("  {:<28}", def.name), name_style),
+                frequency_span,
                 status_span,
             ]);
 

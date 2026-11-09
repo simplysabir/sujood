@@ -25,6 +25,7 @@ Built with a warm dark aesthetic intended to feel calm and intentional, not like
 - **Prayer times** — computed offline via astronomical algorithms (13 calculation methods, Hanafi/Shafi madhab)
 - **Prayer tracking** — mark each prayer done or missed; missed prayers go into the qada queue automatically
 - **Adhkar** — checkbox and counter types; morning, evening, and post-salah tasbih built in; add your own
+- **Adhkar management** — edit, reorder, deactivate, and reactivate custom definitions without deleting historical logs
 - **Quran log** — track daily pages with a progress bar toward your daily target
 - **Qada queue** — keeps count of owed prayers with a payback estimate
 - **Streak tracker** — consecutive days with all 5 prayers completed
@@ -120,6 +121,14 @@ sujood dhikr evening                # mark evening adhkar done
 sujood dhikr mark "Post-Salah Tasbih" --count 33
 sujood dhikr list                   # show all dhikr with today's progress
 sujood dhikr add "Istighfar" --type counter --target 100 --freq daily
+sujood dhikr edit "Istighfar" --target 200
+sujood dhikr deactivate "Istighfar"
+sujood dhikr activate "Istighfar"
+sujood dhikr reorder "Istighfar" 1
+
+# Local database protection
+sujood backup ./backups/sujood-backup.db
+sujood restore ./backups/sujood-backup.db
 
 # Quran
 sujood quran 2                      # log 2 pages read today
@@ -168,6 +177,15 @@ All data is stored in a local SQLite database:
 - **Linux:** `~/.local/share/sujood/sujood.db`
 
 Nothing leaves your machine.
+
+Backups use SQLite's consistent `VACUUM INTO` operation. Restore validates
+integrity and schema compatibility, stages the replacement, and preserves the
+previous database as `sujood.pre-restore.bak`.
+
+## Development
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the project structure, database
+migration rules, and build/test commands.
 
 ---
 

@@ -19,7 +19,7 @@ const HIJRI_MONTH_NAMES: &[&str] = &[
 ];
 
 fn hijri_month_name(month: usize) -> &'static str {
-    if month >= 1 && month <= 12 {
+    if (1..=12).contains(&month) {
         HIJRI_MONTH_NAMES[month - 1]
     } else {
         "Unknown"
@@ -58,23 +58,12 @@ pub fn to_hijri(date: NaiveDate) -> Result<HijriInfo> {
     })
 }
 
-/// Returns the Hijri date string for today, with an optional day offset.
-/// `offset_days` lets users adjust for local moon sighting differences
-/// (e.g., -1 if your country is one day behind Saudi Arabia).
-pub fn today_hijri_string(offset_days: i32) -> String {
-    let today = chrono::Local::now().date_naive();
-    let adjusted = today + Duration::days(offset_days as i64);
-
-    match HijriDate::from_gr(
-        adjusted.year() as usize,
-        adjusted.month() as usize,
-        adjusted.day() as usize,
-    ) {
-        Ok(hd) => format!("{} {} {}", hd.day(), hijri_month_name(hd.month()), hd.year()),
-        Err(_) => {
-            // Fallback: use today without offset
-            let hd = HijriDate::today();
-            format!("{} {} {}", hd.day(), hijri_month_name(hd.month()), hd.year())
-        }
+/// Convert the supplied Sujood-local date to its Hijri representation, applying
+/// the configured moon-sighting adjustment before conversion.
+pub fn hijri_string_for_date(date: NaiveDate, offset_days: i32) -> Result<String> {
+    let adjusted = date + Duration::days(i64::from(offset_days));
+    match to_hijri(adjusted) {
+        Ok(hijri) => Ok(hijri.formatted()),
+        Err(_) => Ok(format!("Hijri unavailable ({adjusted})")),
     }
 }

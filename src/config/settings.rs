@@ -1,7 +1,13 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::PathBuf;
+
+use crate::utils::validation::{
+    validate_coordinates, validate_daily_quran_target, validate_timezone_offset_minutes,
+};
 
 fn default_latitude() -> f64 {
     33.6938
@@ -122,8 +128,7 @@ pub struct AppConfig {
 
 impl AppConfig {
     fn project_dirs() -> Result<ProjectDirs> {
-        ProjectDirs::from("", "", "sujood")
-            .context("Could not determine project directories")
+        ProjectDirs::from("", "", "sujood").context("Could not determine project directories")
     }
 
     pub fn config_path() -> Result<PathBuf> {
@@ -141,24 +146,65 @@ impl AppConfig {
     }
 
     pub fn load() -> Result<Self> {
+        let config = Self::load_unvalidated()?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Load the on-disk values without validating them. This is reserved for
+    /// the setup-recovery path so users can repair an older invalid config
+    /// instead of being locked out of the setup wizard.
+    pub fn load_unvalidated() -> Result<Self> {
         let path = Self::config_path()?;
         if !path.exists() {
             return Ok(Self::default());
         }
+
         let content =
             std::fs::read_to_string(&path).with_context(|| format!("Reading {:?}", path))?;
-        let config: AppConfig = toml::from_str(&content).context("Parsing config.toml")?;
-        Ok(config)
+        toml::from_str(&content).context("Parsing config.toml")
+    }
+
+    /// Validate user-supplied configuration before it is used by any workflow.
+    pub fn validate(&self) -> Result<()> {
+        validate_coordinates(self.salah.latitude, self.salah.longitude)?;
+        validate_timezone_offset_minutes(self.salah.timezone_offset)?;
+        if !(-1..=1).contains(&self.salah.hijri_offset) {
+            anyhow::bail!("Hijri date adjustment must be -1, 0, or +1 day");
+        }
+        validate_daily_quran_target(self.quran.daily_target)?;
+        Ok(())
     }
 
     pub fn save(&self) -> Result<()> {
+        self.validate()?;
         let path = Self::config_path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+
         let content = toml::to_string_pretty(self).context("Serializing config")?;
-        std::fs::write(&path, content).with_context(|| format!("Writing {:?}", path))?;
+        let temporary = path.with_extension("toml.tmp");
+        let write_result = (|| -> Result<()> {
+            let mut file = File::create(&temporary)
+                .with_context(|| format!("Writing temporary config {:?}", temporary))?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, &path).with_context(|| format!("Replacing {:?}", path))?;
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        write_result?;
         Ok(())
+    }
+
+    /// Repair setup-only values that would otherwise prevent the wizard from saving.
+    pub fn repair_for_setup(&mut self) {
+        if validate_daily_quran_target(self.quran.daily_target).is_err() {
+            self.quran.daily_target = default_daily_target();
+        }
     }
 
     pub fn ensure_data_dir() -> Result<PathBuf> {

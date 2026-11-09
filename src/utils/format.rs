@@ -1,16 +1,23 @@
 use chrono::NaiveTime;
 
-/// Format a duration in seconds to "Xh Ym" or "Ym" string
+/// Format a duration in seconds without hiding short remaining intervals.
 pub fn format_duration_secs(secs: i64) -> String {
     if secs <= 0 {
         return "now".to_string();
     }
     let hours = secs / 3600;
     let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
     if hours > 0 {
         format!("{}h {}m", hours, minutes)
+    } else if minutes > 0 {
+        if seconds > 0 {
+            format!("{}m {}s", minutes, seconds)
+        } else {
+            format!("{}m", minutes)
+        }
     } else {
-        format!("{}m", minutes)
+        format!("{}s", seconds)
     }
 }
 
@@ -24,7 +31,10 @@ pub fn format_pages(pages: f64) -> String {
     if pages == pages.floor() {
         format!("{}", pages as i64)
     } else {
-        format!("{:.1}", pages)
+        format!("{pages:.6}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
