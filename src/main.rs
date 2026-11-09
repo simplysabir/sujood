@@ -21,11 +21,43 @@ fn main() -> Result<()> {
     env_logger::init();
 
     let cli = Cli::parse();
-    let mut config = AppConfig::load().context("Loading config")?;
+    let (mut config, config_needs_repair) = match AppConfig::load() {
+        Ok(config) => (config, false),
+        Err(error) if matches!(cli.command.as_ref(), Some(Commands::Setup { .. })) => {
+            eprintln!("Existing configuration is invalid: {error}");
+            eprintln!("Opening setup so the configuration can be corrected.");
+            let config = AppConfig::load_unvalidated().unwrap_or_else(|load_error| {
+                eprintln!("Could not parse the existing configuration: {load_error}");
+                AppConfig::default()
+            });
+            (config, true)
+        }
+        Err(error) => return Err(error).context("Loading config"),
+    };
 
     // Ensure data directory exists and open DB
     AppConfig::ensure_data_dir()?;
     let db_path = AppConfig::db_path()?;
+
+    if let Some(command) = cli.command.as_ref() {
+        match command {
+            Commands::Backup { path } => {
+                db::backup::create_backup(&db_path, path)?;
+                println!("Backup created at {}", path.display());
+                return Ok(());
+            }
+            Commands::Restore { path } => {
+                let previous = db::backup::restore_backup(&db_path, path)?;
+                println!("Database restored from {}", path.display());
+                if previous.exists() {
+                    println!("Previous database preserved at {}", previous.display());
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     let conn = Connection::open(&db_path)
         .with_context(|| format!("Opening database at {:?}", db_path))?;
 
@@ -38,7 +70,7 @@ fn main() -> Result<()> {
     match cli.command {
         // Setup wizard
         Some(Commands::Setup { reset }) => {
-            handlers::handle_setup(&conn, &mut config, reset)?;
+            handlers::handle_setup(&conn, &mut config, reset || config_needs_repair)?;
         }
 
         // Explicit subcommands — check setup first
@@ -49,23 +81,24 @@ fn main() -> Result<()> {
                     handlers::handle_times(&conn, &config)?;
                 }
                 Commands::Mark { prayer, missed } => {
-                    handlers::handle_mark(&conn, &prayer, missed)?;
+                    handlers::handle_mark(&conn, &config, &prayer, missed)?;
                 }
                 Commands::Qada { action } => {
-                    handlers::handle_qada(&conn, &action)?;
+                    handlers::handle_qada(&conn, &config, &action)?;
                 }
                 Commands::Dhikr { action } => {
-                    handlers::handle_dhikr(&conn, &action)?;
+                    handlers::handle_dhikr(&conn, &config, &action)?;
                 }
                 Commands::Quran { pages } => {
-                    handlers::handle_quran(&conn, pages)?;
+                    handlers::handle_quran(&conn, &config, pages)?;
                 }
                 Commands::Stats { week } => {
-                    handlers::handle_stats(&conn, week)?;
+                    handlers::handle_stats(&conn, &config, week)?;
                 }
                 Commands::Export => {
                     handlers::handle_export(&conn, &config)?;
                 }
+                Commands::Backup { .. } | Commands::Restore { .. } => unreachable!(),
                 Commands::Setup { .. } => unreachable!(),
             }
         }
@@ -74,15 +107,14 @@ fn main() -> Result<()> {
         None => {
             ensure_setup(&conn, &mut config)?;
             // Ensure prayer times are cached for today+7 days
-            if let Ok(calc) = PrayerCalculator::new(
+            let calc = PrayerCalculator::new(
                 config.salah.latitude,
                 config.salah.longitude,
                 &config.salah.calc_method,
                 &config.salah.madhab,
                 config.salah.timezone_offset,
-            ) {
-                let _ = calc.ensure_cached(&conn, 7);
-            }
+            )?;
+            calc.ensure_cached(&conn, 7)?;
             tui::app::run(conn, config)?;
         }
     }

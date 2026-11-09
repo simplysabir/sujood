@@ -7,7 +7,15 @@ use ratatui::{
 
 use crate::tui::theme;
 
-pub fn render(frame: &mut Frame, area: Rect) {
+pub fn render(frame: &mut Frame, area: Rect, message: Option<&str>, is_error: bool) {
+    if let Some(message) = message {
+        let style = if is_error { theme::red() } else { theme::green() };
+        let paragraph = Paragraph::new(Line::from(Span::styled(message, style)))
+            .alignment(Alignment::Center);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
     let hints = vec![
         ("[m]", " mark  "),
         ("[M]", " missed  "),

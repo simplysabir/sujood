@@ -14,6 +14,8 @@ use crate::db::repository::CacheRepo;
 use crate::prayer_times::calculator::{PrayerCalculator, CALC_METHODS};
 use crate::tui::theme;
 use crate::tui::events::{Event, EventHandler};
+use crate::tui::terminal::TerminalGuard;
+use crate::utils::validation::validate_timezone_offset_minutes;
 
 // ─── Wizard steps ────────────────────────────────────────────────────────────
 
@@ -175,7 +177,7 @@ impl SetupWizard {
                 s.parse::<f64>()
                     .map_err(|_| "Enter a valid latitude (e.g. 19.0748)".to_string())
                     .and_then(|v| {
-                        if v < -90.0 || v > 90.0 {
+                        if !v.is_finite() || !(-90.0..=90.0).contains(&v) {
                             Err("Latitude must be between -90 and 90".to_string())
                         } else {
                             Ok(())
@@ -187,7 +189,7 @@ impl SetupWizard {
                 s.parse::<f64>()
                     .map_err(|_| "Enter a valid longitude (e.g. 72.8856)".to_string())
                     .and_then(|v| {
-                        if v < -180.0 || v > 180.0 {
+                        if !v.is_finite() || !(-180.0..=180.0).contains(&v) {
                             Err("Longitude must be between -180 and 180".to_string())
                         } else {
                             Ok(())
@@ -386,7 +388,6 @@ fn draw(frame: &mut Frame, wizard: &mut SetupWizard) {
         Step::Madhab => draw_choice(
             frame,
             inner,
-            4,
             "Madhab",
             "Affects Asr prayer time calculation",
             &["Hanafi  (later Asr)", "Shafi  (earlier Asr)"],
@@ -396,7 +397,6 @@ fn draw(frame: &mut Frame, wizard: &mut SetupWizard) {
         Step::HijriOffset => draw_choice(
             frame,
             inner,
-            7,
             "Hijri Date",
             "When does your region start each Islamic month?",
             &[
@@ -643,7 +643,6 @@ fn draw_method_list(frame: &mut Frame, area: Rect, wizard: &mut SetupWizard) {
 fn draw_choice(
     frame: &mut Frame,
     area: Rect,
-    y_offset: u16,
     title: &str,
     subtitle: &str,
     options: &[&str],
@@ -788,6 +787,7 @@ fn draw_caching(frame: &mut Frame) {
 pub fn run_setup_tui(conn: &Connection, config: &mut AppConfig) -> Result<()> {
     let mut wizard = SetupWizard::new(config);
     let mut terminal = ratatui::init();
+    let _terminal_guard = TerminalGuard;
     let events = EventHandler::new(100);
 
     loop {
@@ -801,7 +801,7 @@ pub fn run_setup_tui(conn: &Connection, config: &mut AppConfig) -> Result<()> {
                 }
                 if wizard.confirmed {
                     // Show caching screen
-                    terminal.draw(|frame| draw_caching(frame))?;
+                    terminal.draw(draw_caching)?;
 
                     // Build and save config
                     let new_config = wizard.build_config(config);
@@ -827,10 +827,9 @@ pub fn run_setup_tui(conn: &Connection, config: &mut AppConfig) -> Result<()> {
                 }
             }
             Event::Tick => {}
+            Event::Error(error) => return Err(anyhow::anyhow!(error)),
         }
     }
-
-    ratatui::restore();
     Ok(())
 }
 
@@ -838,7 +837,9 @@ pub fn run_setup_tui(conn: &Connection, config: &mut AppConfig) -> Result<()> {
 
 fn format_tz(minutes: i32) -> String {
     let sign = if minutes < 0 { "-" } else { "+" };
-    let abs = minutes.abs();
+    // Widen before taking the absolute value so even a corrupted legacy
+    // configuration containing i32::MIN can still be opened for repair.
+    let abs = i64::from(minutes).abs();
     let h = abs / 60;
     let m = abs % 60;
     if m == 0 {
@@ -848,24 +849,67 @@ fn format_tz(minutes: i32) -> String {
     }
 }
 
-fn parse_tz(s: &str) -> Result<i32> {
-    let s = s.trim().trim_start_matches('+');
-    let negative = s.starts_with('-');
-    let s = s.trim_start_matches('-');
-    let sign = if negative { -1 } else { 1 };
+pub(crate) fn parse_tz(input: &str) -> Result<i32> {
+    let input = input.trim();
+    if input.is_empty() {
+        anyhow::bail!("Timezone offset cannot be empty");
+    }
 
-    let minutes = if s.contains(':') {
-        let mut parts = s.splitn(2, ':');
-        let h: i32 = parts.next().unwrap_or("0").parse()?;
-        let m: i32 = parts.next().unwrap_or("0").parse()?;
-        h * 60 + m
-    } else if s.contains('.') {
-        let h: f64 = s.parse()?;
-        (h * 60.0).round() as i32
+    let (negative, value) = if let Some(value) = input.strip_prefix('-') {
+        (true, value)
+    } else if let Some(value) = input.strip_prefix('+') {
+        (false, value)
     } else {
-        let h: i32 = s.parse()?;
-        h * 60
+        (false, input)
+    };
+    if value.is_empty() {
+        anyhow::bail!("Timezone offset is missing its numeric value");
+    }
+
+    let absolute_minutes = if value.contains(':') {
+        let mut parts = value.split(':');
+        let hours: i32 = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Missing timezone hours"))?
+            .parse()?;
+        let minutes: i32 = parts
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Missing timezone minutes"))?
+            .parse()?;
+        if parts.next().is_some() || hours < 0 || !(0..60).contains(&minutes) {
+            anyhow::bail!("Use a timezone offset such as +5:30 or -3:00");
+        }
+        hours
+            .checked_mul(60)
+            .and_then(|value| value.checked_add(minutes))
+            .ok_or_else(|| anyhow::anyhow!("Timezone offset is too large"))?
+    } else if value.contains('.') {
+        let hours: f64 = value.parse()?;
+        if !hours.is_finite() || !(0.0..=14.0).contains(&hours) {
+            anyhow::bail!("Timezone offset must be between UTC-12:00 and UTC+14:00");
+        }
+        let minutes = hours * 60.0;
+        if (minutes - minutes.round()).abs() > 1e-7 {
+            anyhow::bail!("Timezone offset must resolve to a whole number of minutes");
+        }
+        minutes.round() as i32
+    } else {
+        let hours: i32 = value.parse()?;
+        if hours < 0 {
+            anyhow::bail!("Do not include a second sign in the timezone offset");
+        }
+        hours
+            .checked_mul(60)
+            .ok_or_else(|| anyhow::anyhow!("Timezone offset is too large"))?
     };
 
-    Ok(sign * minutes)
+    let signed_minutes = if negative {
+        -absolute_minutes
+    } else {
+        absolute_minutes
+    };
+    validate_timezone_offset_minutes(signed_minutes)?;
+    // Validate the exact input range after parsing. In particular, +14:01 is
+    // invalid even though its hour component alone is within range.
+    Ok(signed_minutes)
 }

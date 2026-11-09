@@ -1,10 +1,14 @@
 use anyhow::{anyhow, Result};
-use chrono::{Duration, FixedOffset, NaiveDate, NaiveTime};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveTime};
 use rusqlite::Connection;
 use salah::prelude::*;
 
 use crate::db::repository::CacheRepo;
 use crate::models::PrayerType;
+use crate::utils::{
+    time::now_at_offset,
+    validation::{validate_coordinates, validate_timezone_offset_minutes},
+};
 
 #[derive(Debug, Clone)]
 pub struct PrayerTimesLocal {
@@ -32,7 +36,9 @@ impl PrayerCalculator {
         madhab: &str,
         tz_offset_minutes: i32,
     ) -> Result<Self> {
-        // Validate method + madhab early
+        // Validate all calculation inputs before they reach the prayer library.
+        validate_coordinates(lat, lng)?;
+        validate_timezone_offset_minutes(tz_offset_minutes)?;
         parse_method(method)?;
         parse_madhab(madhab)?;
         Ok(Self {
@@ -42,6 +48,19 @@ impl PrayerCalculator {
             madhab_str: madhab.to_string(),
             tz_offset_minutes,
         })
+    }
+
+    /// Stable identity for every input that affects the calculated schedule.
+    /// The bit representation avoids locale/rounding differences in float text.
+    pub fn cache_fingerprint(&self) -> String {
+        format!(
+            "lat={:016x};lng={:016x};method={};madhab={};offset={}",
+            self.lat.to_bits(),
+            self.lng.to_bits(),
+            self.method_str,
+            self.madhab_str,
+            self.tz_offset_minutes,
+        )
     }
 
     fn compute_times(&self, date: NaiveDate) -> Result<PrayerTimesLocal> {
@@ -78,15 +97,26 @@ impl PrayerCalculator {
         self.compute_times(date)
     }
 
-    /// Ensure prayer_times_cache has entries for today through `days_ahead` days.
+    /// Ensure prayer_times_cache has entries for the configured local date through
+    /// `days_ahead` days. The host machine timezone is never used.
     pub fn ensure_cached(&self, conn: &Connection, days_ahead: u32) -> Result<()> {
-        let today = chrono::Local::now().date_naive();
+        let today = now_at_offset(self.tz_offset_minutes)?.date_naive();
+        self.ensure_cached_from(conn, today, days_ahead)
+    }
 
+    /// Cache a deterministic date range. This is also useful for regression tests.
+    pub fn ensure_cached_from(
+        &self,
+        conn: &Connection,
+        start_date: NaiveDate,
+        days_ahead: u32,
+    ) -> Result<()> {
+        let fingerprint = self.cache_fingerprint();
         for i in 0..=(days_ahead as i64) {
-            let date = today + Duration::days(i);
+            let date = start_date + Duration::days(i);
             let date_str = date.format("%Y-%m-%d").to_string();
 
-            if CacheRepo::get_times_for_date(conn, &date_str)?.is_none() {
+            if CacheRepo::get_times_for_date(conn, &date_str, &fingerprint)?.is_none() {
                 let times = self.compute_times(date)?;
                 let cached = crate::db::repository::CachedTimes {
                     fajr: times.fajr,
@@ -96,7 +126,7 @@ impl PrayerCalculator {
                     maghrib: times.maghrib,
                     isha: times.isha,
                 };
-                CacheRepo::store_times(conn, &date_str, &cached)?;
+                CacheRepo::store_times(conn, &date_str, &fingerprint, &cached)?;
             }
         }
         Ok(())
@@ -109,8 +139,11 @@ impl PrayerCalculator {
         date: NaiveDate,
     ) -> Result<PrayerTimesLocal> {
         let date_str = date.format("%Y-%m-%d").to_string();
+        let fingerprint = self.cache_fingerprint();
 
-        if let Some(cached) = CacheRepo::get_times_for_date(conn, &date_str)? {
+        if let Some(cached) =
+            CacheRepo::get_times_for_date(conn, &date_str, &fingerprint)?
+        {
             return Ok(PrayerTimesLocal {
                 fajr: cached.fajr,
                 sunrise: cached.sunrise,
@@ -130,18 +163,30 @@ impl PrayerCalculator {
             maghrib: times.maghrib,
             isha: times.isha,
         };
-        CacheRepo::store_times(conn, &date_str, &cached)?;
+        CacheRepo::store_times(conn, &date_str, &fingerprint, &cached)?;
         Ok(times)
     }
 
-    /// Returns (next PrayerType, seconds until it).
-    /// `now_time` is the current local time.
+    /// Returns (next PrayerType, seconds until it) for an instant expressed in
+    /// this calculator's configured fixed offset. Passing one timezone-aware
+    /// instant prevents callers from accidentally mixing a host-local date and
+    /// time with the configured prayer schedule.
     pub fn get_next_prayer(
         &self,
         conn: &Connection,
-        now_date: NaiveDate,
-        now_time: NaiveTime,
+        now: DateTime<FixedOffset>,
     ) -> Result<Option<(PrayerType, i64)>> {
+        let expected_offset_seconds = self.tz_offset_minutes * 60;
+        if now.offset().local_minus_utc() != expected_offset_seconds {
+            return Err(anyhow!(
+                "Current time uses UTC offset {} seconds, but Sujood is configured for {} seconds",
+                now.offset().local_minus_utc(),
+                expected_offset_seconds
+            ));
+        }
+
+        let now_date = now.date_naive();
+        let now_time = now.time();
         let today_times = self.get_cached_or_compute(conn, now_date)?;
 
         let schedule = [
@@ -160,12 +205,13 @@ impl PrayerCalculator {
         }
 
         // All prayers passed — next is Fajr tomorrow
-        let tomorrow = now_date.succ_opt().unwrap_or(now_date);
+        let tomorrow = now_date.succ_opt().ok_or_else(|| {
+            anyhow!("Cannot calculate prayer time beyond the maximum supported date")
+        })?;
         let tomorrow_times = self.get_cached_or_compute(conn, tomorrow)?;
-        let midnight_to_fajr = tomorrow_times.fajr.signed_duration_since(NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-        let remaining_today = NaiveTime::from_hms_opt(23, 59, 59).unwrap()
-            .signed_duration_since(now_time);
-        let secs = remaining_today.num_seconds() + midnight_to_fajr.num_seconds() + 1;
+        let now = now_date.and_time(now_time);
+        let next_fajr = tomorrow.and_time(tomorrow_times.fajr);
+        let secs = (next_fajr - now).num_seconds();
         Ok(Some((PrayerType::Fajr, secs)))
     }
 }

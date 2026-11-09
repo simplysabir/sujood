@@ -1,4 +1,3 @@
-use chrono::Local;
 use ratatui::{
     layout::{Alignment, Rect},
     style::Modifier,
@@ -9,10 +8,7 @@ use ratatui::{
 
 use crate::tui::theme;
 
-pub fn render(frame: &mut Frame, area: Rect, hijri_str: &str) {
-    let today = Local::now();
-    let gregorian_str = today.format("%A, %b %d, %Y").to_string();
-
+pub fn render(frame: &mut Frame, area: Rect, hijri_str: &str, gregorian_str: &str) {
     let title_line = Line::from(vec![
         Span::styled("  سُجُود  ", theme::gold().add_modifier(Modifier::BOLD)),
         Span::styled("sujood", theme::gold()),
@@ -21,7 +17,7 @@ pub fn render(frame: &mut Frame, area: Rect, hijri_str: &str) {
     let date_line = Line::from(vec![
         Span::styled(hijri_str, theme::amber()),
         Span::styled("  ·  ", theme::dim()),
-        Span::styled(&gregorian_str, theme::dim()),
+        Span::styled(gregorian_str, theme::dim()),
     ]);
 
     let text = vec![title_line, Line::from(""), date_line];

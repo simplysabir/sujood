@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "sujood", version, author, about = "A beautiful terminal companion for Islamic practice tracking")]
@@ -48,6 +49,16 @@ pub enum Commands {
     },
     /// Export a weekly text summary to stdout
     Export,
+    /// Create a consistent SQLite database backup
+    Backup {
+        /// Destination database path
+        path: PathBuf,
+    },
+    /// Validate and safely restore a SQLite database backup
+    Restore {
+        /// Backup database path
+        path: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -93,4 +104,32 @@ pub enum DhikrCommands {
     },
     /// List all active dhikr definitions
     List,
+    /// Edit a custom dhikr definition
+    Edit {
+        /// Existing dhikr name
+        name: String,
+        /// New name
+        #[arg(long)]
+        new_name: Option<String>,
+        /// Type: checkbox or counter
+        #[arg(long)]
+        r#type: Option<String>,
+        /// Target count
+        #[arg(long)]
+        target: Option<i32>,
+        /// Frequency: daily or weekly
+        #[arg(long)]
+        freq: Option<String>,
+    },
+    /// Deactivate a custom dhikr definition
+    Deactivate { name: String },
+    /// Reactivate a dhikr definition
+    Activate { name: String },
+    /// Set a custom dhikr display order
+    Reorder {
+        /// Dhikr name
+        name: String,
+        /// Zero-based display order
+        order: i32,
+    },
 }
