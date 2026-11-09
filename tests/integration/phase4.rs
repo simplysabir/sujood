@@ -14,8 +14,7 @@ fn dhikr_lifecycle_preserves_logs_and_protects_builtins() {
     let definition = DhikrRepo::find_by_name(&conn, "istighfar")
         .expect("find custom Dhikr")
         .expect("custom Dhikr exists");
-    DhikrRepo::upsert_log(&conn, definition.id, "2026-11-09", 40, false)
-        .expect("save progress");
+    DhikrRepo::upsert_log(&conn, definition.id, "2026-11-09", 40, false).expect("save progress");
 
     DhikrRepo::edit_custom(
         &conn,
@@ -32,9 +31,11 @@ fn dhikr_lifecycle_preserves_logs_and_protects_builtins() {
     assert!(DhikrRepo::set_active(&conn, "Morning Adhkar", false).is_err());
 
     DhikrRepo::set_active(&conn, "Astaghfirullah", false).expect("deactivate custom Dhikr");
-    assert!(DhikrRepo::find_by_name(&conn, "Astaghfirullah")
-        .expect("query inactive Dhikr")
-        .is_none());
+    assert!(
+        DhikrRepo::find_by_name(&conn, "Astaghfirullah")
+            .expect("query inactive Dhikr")
+            .is_none()
+    );
     DhikrRepo::set_active(&conn, "Astaghfirullah", true).expect("reactivate custom Dhikr");
     DhikrRepo::reorder(&conn, "Astaghfirullah", 0).expect("reorder custom Dhikr");
 }
@@ -70,9 +71,11 @@ fn backup_and_restore_preserve_database_records() {
     assert!(previous.is_file());
 
     let restored = rusqlite::Connection::open(&replacement).expect("open restored database");
-    assert!(DhikrRepo::find_by_name(&restored, "backup probe")
-        .expect("query restored Dhikr")
-        .is_some());
+    assert!(
+        DhikrRepo::find_by_name(&restored, "backup probe")
+            .expect("query restored Dhikr")
+            .is_some()
+    );
     drop(restored);
     fs::remove_file(previous).expect("clean previous database");
 }

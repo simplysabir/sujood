@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// Validate the fixed UTC offset currently stored by Sujood.
 ///

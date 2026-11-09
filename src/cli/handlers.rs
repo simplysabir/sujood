@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use rusqlite::Connection;
 use std::str::FromStr;
 
@@ -39,17 +39,15 @@ const GOLD: &str = "\x1b[38;2;196;160;68m";
 
 // ─── Setup wizard ────────────────────────────────────────────────────────────
 
-pub fn handle_setup(
-    conn: &Connection,
-    config: &mut AppConfig,
-    reset: bool,
-) -> Result<()> {
+pub fn handle_setup(conn: &Connection, config: &mut AppConfig, reset: bool) -> Result<()> {
+    config.repair_for_setup();
     if !reset {
-        if let Some(done) = MetaRepo::get(conn, "setup_done")?
-            && done == "1" {
+        if let Some(done) = MetaRepo::get(conn, "setup_done")? {
+            if done == "1" {
                 println!("Sujood is already configured. Use --reset to reconfigure.");
                 return Ok(());
             }
+        }
     }
     crate::cli::setup_tui::run_setup_tui(conn, config)
 }
@@ -131,11 +129,8 @@ pub fn handle_mark(
     let today_str = format_date(today_at_offset(config.salah.timezone_offset)?);
 
     if missed {
-        let added_to_qada = PrayerRepo::mark_missed_with_qada(
-            conn,
-            prayer_type.as_str(),
-            &today_str,
-        )?;
+        let added_to_qada =
+            PrayerRepo::mark_missed_with_qada(conn, prayer_type.as_str(), &today_str)?;
         let detail = if added_to_qada {
             "added to qada queue"
         } else {
@@ -156,11 +151,7 @@ pub fn handle_mark(
 
 // ─── Qada ────────────────────────────────────────────────────────────────────
 
-pub fn handle_qada(
-    conn: &Connection,
-    config: &AppConfig,
-    action: &QadaCommands,
-) -> Result<()> {
+pub fn handle_qada(conn: &Connection, config: &AppConfig, action: &QadaCommands) -> Result<()> {
     match action {
         QadaCommands::List => {
             let queue = QadaRepo::get_queue(conn)?;
@@ -192,13 +183,20 @@ pub fn handle_qada(
                 println_colored!(GREEN, "  ✓ No qada prayers in queue");
             }
         }
-        QadaCommands::Add { prayer } => {
-            let prayer_type = PrayerType::from_str(prayer)
-                .map_err(|_| anyhow!("Unknown prayer '{}'", prayer))?;
-            let today = format_date(today_at_offset(config.salah.timezone_offset)?);
-            let inserted = QadaRepo::add_entry(conn, prayer_type.as_str(), &today)?;
+        QadaCommands::Add { prayer, date } => {
+            let prayer_type =
+                PrayerType::from_str(prayer).map_err(|_| anyhow!("Unknown prayer '{}'", prayer))?;
+            let original_date = match date {
+                Some(date) => date.clone(),
+                None => format_date(today_at_offset(config.salah.timezone_offset)?),
+            };
+            let inserted = QadaRepo::add_entry(conn, prayer_type.as_str(), &original_date)?;
             if inserted {
-                println_colored!(AMBER, "  Added {} to qada queue", prayer_type.display_name());
+                println_colored!(
+                    AMBER,
+                    "  Added {} to qada queue",
+                    prayer_type.display_name()
+                );
             } else {
                 println_colored!(
                     DIM,
@@ -213,11 +211,7 @@ pub fn handle_qada(
 
 // ─── Dhikr ───────────────────────────────────────────────────────────────────
 
-pub fn handle_dhikr(
-    conn: &Connection,
-    config: &AppConfig,
-    action: &DhikrCommands,
-) -> Result<()> {
+pub fn handle_dhikr(conn: &Connection, config: &AppConfig, action: &DhikrCommands) -> Result<()> {
     let today = format_date(today_at_offset(config.salah.timezone_offset)?);
 
     match action {
@@ -247,9 +241,7 @@ pub fn handle_dhikr(
             println!();
             for def in &defs {
                 let log = logs.iter().find(|l| l.dhikr_id == def.id);
-                let (count, completed) = log
-                    .map(|l| (l.count, l.completed))
-                    .unwrap_or((0, false));
+                let (count, completed) = log.map(|l| (l.count, l.completed)).unwrap_or((0, false));
                 let status = if completed {
                     format!("{}✓\x1b[0m", GREEN)
                 } else {
@@ -283,7 +275,11 @@ pub fn handle_dhikr(
                 *target,
                 freq.as_deref(),
             )?;
-            println_colored!(GREEN, "  ✓ Updated dhikr: {}", new_name.as_deref().unwrap_or(name));
+            println_colored!(
+                GREEN,
+                "  ✓ Updated dhikr: {}",
+                new_name.as_deref().unwrap_or(name)
+            );
         }
         DhikrCommands::Deactivate { name } => {
             DhikrRepo::set_active(conn, name, false)?;
@@ -411,14 +407,14 @@ pub fn handle_stats(conn: &Connection, config: &AppConfig, week: bool) -> Result
         println_colored!(AMBER, "  Qada queue:  {} prayers", qada_count);
     }
 
-    println!(
-        "  Quran (7d):  {} pages",
-        format_pages(quran_weekly)
-    );
+    println!("  Quran (7d):  {} pages", format_pages(quran_weekly));
 
     if week {
         println!();
-        println_colored!(DIM, "  Last 7 days  (● = 5/5, ◕ = 3-4, ◑ = 1-2, ○ = 0/5, · = no records)");
+        println_colored!(
+            DIM,
+            "  Last 7 days  (● = 5/5, ◕ = 3-4, ◑ = 1-2, ○ = 0/5, · = no records)"
+        );
         println!();
         print!("  ");
         let daily = StatsRepo::get_weekly_grid(conn, &week_start_str, &today_str)?;
@@ -483,7 +479,10 @@ pub fn handle_export(conn: &Connection, config: &AppConfig) -> Result<()> {
     }
     println!();
     println!("## Summary");
-    println!("  Streak:     {} days (best: {})", streak.current, streak.best);
+    println!(
+        "  Streak:     {} days (best: {})",
+        streak.current, streak.best
+    );
     println!("  Qada owed:  {}", qada_count);
     println!("  Quran (7d): {} pages", format_pages(quran_weekly));
     Ok(())

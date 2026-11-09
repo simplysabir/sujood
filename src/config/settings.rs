@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::PathBuf;
 
 use crate::utils::validation::{
     validate_coordinates, validate_daily_quran_target, validate_timezone_offset_minutes,
@@ -128,8 +128,7 @@ pub struct AppConfig {
 
 impl AppConfig {
     fn project_dirs() -> Result<ProjectDirs> {
-        ProjectDirs::from("", "", "sujood")
-            .context("Could not determine project directories")
+        ProjectDirs::from("", "", "sujood").context("Could not determine project directories")
     }
 
     pub fn config_path() -> Result<PathBuf> {
@@ -183,6 +182,7 @@ impl AppConfig {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+
         let content = toml::to_string_pretty(self).context("Serializing config")?;
         let temporary = path.with_extension("toml.tmp");
         let write_result = (|| -> Result<()> {
@@ -190,8 +190,7 @@ impl AppConfig {
                 .with_context(|| format!("Writing temporary config {:?}", temporary))?;
             file.write_all(content.as_bytes())?;
             file.sync_all()?;
-            fs::rename(&temporary, &path)
-                .with_context(|| format!("Replacing {:?}", path))?;
+            fs::rename(&temporary, &path).with_context(|| format!("Replacing {:?}", path))?;
             Ok(())
         })();
         if write_result.is_err() {
@@ -199,6 +198,13 @@ impl AppConfig {
         }
         write_result?;
         Ok(())
+    }
+
+    /// Repair setup-only values that would otherwise prevent the wizard from saving.
+    pub fn repair_for_setup(&mut self) {
+        if validate_daily_quran_target(self.quran.daily_target).is_err() {
+            self.quran.daily_target = default_daily_target();
+        }
     }
 
     pub fn ensure_data_dir() -> Result<PathBuf> {

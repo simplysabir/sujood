@@ -1,20 +1,16 @@
 use ratatui::{
+    Frame,
     layout::{Alignment, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
-    Frame,
 };
 
 use crate::models::PrayerType;
 use crate::tui::theme;
 use crate::utils::format::format_duration_secs;
 
-pub fn render(
-    frame: &mut Frame,
-    area: Rect,
-    next_prayer: Option<&(PrayerType, i64)>,
-) {
+pub fn render(frame: &mut Frame, area: Rect, next_prayer: Option<&(PrayerType, i64)>) {
     let block = Block::default()
         .title(Span::styled(" Next Prayer ", theme::gold()))
         .borders(Borders::ALL)

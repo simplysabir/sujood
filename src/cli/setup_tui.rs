@@ -1,20 +1,20 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 use rusqlite::Connection;
 
 use crate::config::AppConfig;
 use crate::db::repository::CacheRepo;
-use crate::prayer_times::calculator::{PrayerCalculator, CALC_METHODS};
-use crate::tui::theme;
+use crate::prayer_times::calculator::{CALC_METHODS, PrayerCalculator};
 use crate::tui::events::{Event, EventHandler};
 use crate::tui::terminal::TerminalGuard;
+use crate::tui::theme;
 use crate::utils::validation::validate_timezone_offset_minutes;
 
 // ─── Wizard steps ────────────────────────────────────────────────────────────
@@ -59,8 +59,16 @@ impl SetupWizard {
             .iter()
             .position(|m| *m == existing.salah.calc_method)
             .unwrap_or(0);
-        let madhab_idx = if existing.salah.madhab == "Shafi" { 1 } else { 0 };
-        let hijri_idx = if existing.salah.hijri_offset < 0 { 1 } else { 0 };
+        let madhab_idx = if existing.salah.madhab == "Shafi" {
+            1
+        } else {
+            0
+        };
+        let hijri_idx = if existing.salah.hijri_offset < 0 {
+            1
+        } else {
+            0
+        };
 
         let mut list_state = ListState::default();
         list_state.select(Some(method_idx));
@@ -228,9 +236,9 @@ impl SetupWizard {
             },
 
             Step::TimezoneOffset => self.handle_text_input(key, |s| {
-                parse_tz(s).map(|_| ()).map_err(|_| {
-                    "Use format like +5:30, -3, or +5.5".to_string()
-                })
+                parse_tz(s)
+                    .map(|_| ())
+                    .map_err(|_| "Use format like +5:30, -3, or +5.5".to_string())
             }),
 
             Step::HijriOffset => match key.code {
@@ -457,10 +465,7 @@ fn draw_welcome(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         Line::from(""),
-        Line::from(Span::styled(
-            "This wizard will configure:",
-            theme::dim(),
-        )),
+        Line::from(Span::styled("This wizard will configure:", theme::dim())),
         Line::from(vec![
             Span::styled("  ●  ", theme::gold()),
             Span::styled("Your location for accurate prayer times", theme::dim()),
@@ -522,7 +527,10 @@ fn draw_text_step(frame: &mut Frame, area: Rect, wizard: &SetupWizard) {
     let mut lines = vec![
         Line::from(""),
         Line::from(""),
-        Line::from(Span::styled(title, theme::gold().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            title,
+            theme::gold().add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from(Span::styled(subtitle, theme::dim())),
         Line::from(""),
@@ -540,7 +548,10 @@ fn draw_text_step(frame: &mut Frame, area: Rect, wizard: &SetupWizard) {
         theme::amber()
     };
 
-    lines.push(Line::from(Span::styled(padded, input_style.add_modifier(Modifier::BOLD))));
+    lines.push(Line::from(Span::styled(
+        padded,
+        input_style.add_modifier(Modifier::BOLD),
+    )));
     lines.push(Line::from(""));
 
     if let Some(err) = &wizard.error {
@@ -651,7 +662,10 @@ fn draw_choice(
 ) {
     let mut lines = vec![
         Line::from(""),
-        Line::from(Span::styled(title, theme::gold().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            title,
+            theme::gold().add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from(Span::styled(subtitle, theme::dim())),
         Line::from(""),
@@ -675,7 +689,10 @@ fn draw_choice(
 
     lines.push(Line::from(""));
     if let Some(err) = error {
-        lines.push(Line::from(Span::styled(format!("  ✗  {}", err), theme::red())));
+        lines.push(Line::from(Span::styled(
+            format!("  ✗  {}", err),
+            theme::red(),
+        )));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -694,7 +711,11 @@ fn draw_choice(
 }
 
 fn draw_confirm(frame: &mut Frame, area: Rect, wizard: &SetupWizard) {
-    let madhab = if wizard.madhab_idx == 0 { "Hanafi" } else { "Shafi" };
+    let madhab = if wizard.madhab_idx == 0 {
+        "Hanafi"
+    } else {
+        "Shafi"
+    };
     let hijri = if wizard.hijri_idx == 0 {
         "Astronomical (default)"
     } else {
@@ -703,7 +724,10 @@ fn draw_confirm(frame: &mut Frame, area: Rect, wizard: &SetupWizard) {
 
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled("Confirm Settings", theme::gold().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Confirm Settings",
+            theme::gold().add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from(Span::styled("Review your configuration:", theme::dim())),
         Line::from(""),
@@ -768,10 +792,7 @@ fn draw_caching(frame: &mut Frame) {
             "Caching 90 days of prayer times offline.",
             theme::dim(),
         )),
-        Line::from(Span::styled(
-            "This only runs once per setup.",
-            theme::dim(),
-        )),
+        Line::from(Span::styled("This only runs once per setup.", theme::dim())),
     ];
 
     let para = Paragraph::new(lines).alignment(Alignment::Center);
@@ -785,6 +806,7 @@ fn draw_caching(frame: &mut Frame) {
 // ─── Public entry point ──────────────────────────────────────────────────────
 
 pub fn run_setup_tui(conn: &Connection, config: &mut AppConfig) -> Result<()> {
+    config.repair_for_setup();
     let mut wizard = SetupWizard::new(config);
     let mut terminal = ratatui::init();
     let _terminal_guard = TerminalGuard;

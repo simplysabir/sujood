@@ -1,11 +1,11 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{Datelike, NaiveDate, NaiveTime};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::str::FromStr;
 
 use crate::models::{
-    DailyStats, DhikrCategory, DhikrDef, DhikrFrequency, DhikrLog, DhikrType, Prayer,
-    PrayerStatus, PrayerType, QadaEntry, Streak,
+    DailyStats, DhikrCategory, DhikrDef, DhikrFrequency, DhikrLog, DhikrType, Prayer, PrayerStatus,
+    PrayerType, QadaEntry, Streak,
 };
 use crate::utils::validation::{validate_dhikr_definition, validate_quran_pages};
 
@@ -199,11 +199,7 @@ impl PrayerRepo {
 
     /// Mark a prayer missed and add its Qada record as one repeat-safe transaction.
     /// Repeating the same operation for the same prayer/date never creates a duplicate.
-    pub fn mark_missed_with_qada(
-        conn: &Connection,
-        prayer_type: &str,
-        date: &str,
-    ) -> Result<bool> {
+    pub fn mark_missed_with_qada(conn: &Connection, prayer_type: &str, date: &str) -> Result<bool> {
         PrayerType::from_str(prayer_type)
             .map_err(|_| anyhow!("Unknown prayer type '{prayer_type}'"))?;
         validate_tracking_date(date)?;
@@ -277,10 +273,12 @@ impl PrayerRepo {
 pub struct DhikrRepo;
 
 impl DhikrRepo {
+    /// Return active definitions in their configured display order.
     pub fn get_active_definitions(conn: &Connection) -> Result<Vec<DhikrDef>> {
         Self::get_definitions(conn, Some(true))
     }
 
+    /// Return all definitions, including inactive definitions.
     pub fn get_all_definitions(conn: &Connection) -> Result<Vec<DhikrDef>> {
         Self::get_definitions(conn, None)
     }
@@ -296,9 +294,7 @@ impl DhikrRepo {
                  FROM dhikr_definitions ORDER BY sort_order, id"
             }
         };
-        let mut stmt = conn.prepare(
-            query,
-        )?;
+        let mut stmt = conn.prepare(query)?;
 
         let map_row = |row: &Row<'_>| {
             Ok((
@@ -376,7 +372,7 @@ impl DhikrRepo {
                 "SELECT l.id, l.dhikr_id, l.date, l.count, l.completed
                  FROM dhikr_log AS l
                  INNER JOIN dhikr_definitions AS d ON d.id = l.dhikr_id
-                 WHERE l.date = ?1 AND d.frequency = 'daily'
+                 WHERE l.date = ?1 AND d.frequency = 'daily' AND d.active = 1
                  ORDER BY l.dhikr_id",
             )?;
             let rows = stmt.query_map(params![date], |row| {
@@ -396,7 +392,7 @@ impl DhikrRepo {
                 "SELECT l.id, l.dhikr_id, l.week_start, l.count, l.completed
                  FROM dhikr_weekly_log AS l
                  INNER JOIN dhikr_definitions AS d ON d.id = l.dhikr_id
-                 WHERE l.week_start = ?1 AND d.frequency = 'weekly'
+                 WHERE l.week_start = ?1 AND d.frequency = 'weekly' AND d.active = 1
                  ORDER BY l.dhikr_id",
             )?;
             let rows = stmt.query_map(params![week_start], |row| {
@@ -411,6 +407,14 @@ impl DhikrRepo {
             result.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
         }
 
+        let definitions = Self::get_active_definitions(conn)?;
+        for log in &mut result {
+            if let Some(definition) = definitions.iter().find(|def| def.id == log.dhikr_id) {
+                if definition.dhikr_type == DhikrType::Counter {
+                    log.completed = log.count >= definition.target_count;
+                }
+            }
+        }
         Ok(result)
     }
 
@@ -463,6 +467,7 @@ impl DhikrRepo {
         Ok(())
     }
 
+    /// Add a custom definition after validating its fields and display order.
     pub fn add_custom(
         conn: &Connection,
         name: &str,
@@ -478,6 +483,9 @@ impl DhikrRepo {
             [],
             |row| row.get(0),
         )?;
+        if max_order == i32::MAX {
+            return Err(anyhow!("Dhikr display order is exhausted"));
+        }
 
         conn.execute(
             "INSERT INTO dhikr_definitions (name, dhikr_type, frequency, target_count, category, sort_order, active)
@@ -500,23 +508,26 @@ impl DhikrRepo {
         Ok(())
     }
 
+    /// Find an active definition by trimmed, case-insensitive name.
     pub fn find_by_name(conn: &Connection, name: &str) -> Result<Option<DhikrDef>> {
         let defs = Self::get_definitions(conn, Some(true))?;
         Ok(defs
             .into_iter()
-            .find(|definition| definition.name.to_lowercase() == name.trim().to_lowercase()))
+            .find(|definition| definition.name.trim().eq_ignore_ascii_case(name.trim())))
     }
 
+    /// Find a definition by name regardless of its active state.
     pub fn find_any_by_name(conn: &Connection, name: &str) -> Result<Option<DhikrDef>> {
         let normalized = name.trim();
         if normalized.is_empty() {
             return Err(anyhow!("Dhikr name cannot be empty"));
         }
-        Ok(Self::get_all_definitions(conn)?.into_iter().find(|definition| {
-            definition.name.trim().eq_ignore_ascii_case(normalized)
-        }))
+        Ok(Self::get_all_definitions(conn)?
+            .into_iter()
+            .find(|definition| definition.name.trim().eq_ignore_ascii_case(normalized)))
     }
 
+    /// Edit a custom definition without changing its historical progress.
     pub fn edit_custom(
         conn: &Connection,
         name: &str,
@@ -537,8 +548,29 @@ impl DhikrRepo {
         let candidate_type = dhikr_type.unwrap_or(definition.dhikr_type.as_str());
         let candidate_target = target.unwrap_or(definition.target_count);
         let candidate_frequency = frequency.unwrap_or(definition.frequency.as_str());
-        let normalized_name =
-            validate_dhikr_definition(candidate_name, candidate_type, candidate_target, candidate_frequency)?;
+        if candidate_frequency != definition.frequency.as_str() {
+            let daily: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM dhikr_log WHERE dhikr_id = ?1 AND (count > 0 OR completed = 1)",
+                params![definition.id],
+                |row| row.get(0),
+            )?;
+            let weekly: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM dhikr_weekly_log WHERE dhikr_id = ?1 AND (count > 0 OR completed = 1)",
+                params![definition.id],
+                |row| row.get(0),
+            )?;
+            if daily > 0 || weekly > 0 {
+                return Err(anyhow!(
+                    "Cannot change frequency after Dhikr progress exists"
+                ));
+            }
+        }
+        let normalized_name = validate_dhikr_definition(
+            candidate_name,
+            candidate_type,
+            candidate_target,
+            candidate_frequency,
+        )?;
 
         conn.execute(
             "UPDATE dhikr_definitions
@@ -556,7 +588,10 @@ impl DhikrRepo {
             if matches!(
                 error,
                 rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error { code: rusqlite::ffi::ErrorCode::ConstraintViolation, .. },
+                    rusqlite::ffi::Error {
+                        code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                        ..
+                    },
                     _
                 )
             ) {
@@ -568,6 +603,7 @@ impl DhikrRepo {
         Ok(())
     }
 
+    /// Set a definition's active state, protecting built-ins from deactivation.
     pub fn set_active(conn: &Connection, name: &str, active: bool) -> Result<()> {
         let definition = Self::find_any_by_name(conn, name)?
             .ok_or_else(|| anyhow!("Dhikr '{}' not found", name))?;
@@ -581,12 +617,16 @@ impl DhikrRepo {
         Ok(())
     }
 
+    /// Set the display order for a custom definition.
     pub fn reorder(conn: &Connection, name: &str, sort_order: i32) -> Result<()> {
         if sort_order < 0 {
             return Err(anyhow!("Dhikr display order cannot be negative"));
         }
         let definition = Self::find_any_by_name(conn, name)?
             .ok_or_else(|| anyhow!("Dhikr '{}' not found", name))?;
+        if definition.category != DhikrCategory::Custom {
+            return Err(anyhow!("Built-in Dhikr definitions are protected"));
+        }
         conn.execute(
             "UPDATE dhikr_definitions SET sort_order = ?1 WHERE id = ?2",
             params![sort_order, definition.id],
@@ -634,6 +674,7 @@ impl QadaRepo {
 
     /// Add a manual Qada entry only when this prayer/date has not already been
     /// recorded. This keeps repeated CLI/TUI actions from creating duplicates.
+    /// Add a Qada entry for the supplied original missed date.
     pub fn add_entry(conn: &Connection, prayer_type: &str, original_date: &str) -> Result<bool> {
         PrayerType::from_str(prayer_type)
             .map_err(|_| anyhow!("Unknown prayer type '{prayer_type}'"))?;
@@ -682,38 +723,48 @@ impl QadaRepo {
 pub struct QuranRepo;
 
 impl QuranRepo {
+    /// Add pages using an immediate transaction to serialize concurrent writes.
     pub fn log_pages(conn: &Connection, date: &str, pages: f64) -> Result<()> {
         validate_quran_pages(pages)?;
         validate_tracking_date(date)?;
 
-        let tx = conn.unchecked_transaction()?;
-        let current: f64 = tx
-            .query_row(
-                "SELECT COALESCE(pages, 0) FROM quran_log WHERE date = ?1",
-                params![date],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(0.0);
-        if !current.is_finite() || current < 0.0 {
-            return Err(anyhow!(
-                "Stored Quran page total is invalid; refusing to update it"
-            ));
-        }
-        let updated_total = current + pages;
-        if !updated_total.is_finite() {
-            return Err(anyhow!(
-                "The resulting Quran page total is outside the supported numeric range"
-            ));
-        }
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> Result<()> {
+            let current: f64 = conn
+                .query_row(
+                    "SELECT COALESCE(pages, 0) FROM quran_log WHERE date = ?1",
+                    params![date],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(0.0);
+            if !current.is_finite() || current < 0.0 {
+                return Err(anyhow!(
+                    "Stored Quran page total is invalid; refusing to update it"
+                ));
+            }
+            let updated_total = current + pages;
+            if !updated_total.is_finite() {
+                return Err(anyhow!(
+                    "The resulting Quran page total is outside the supported numeric range"
+                ));
+            }
 
-        tx.execute(
-            "INSERT INTO quran_log (date, pages) VALUES (?1, ?2)
+            conn.execute(
+                "INSERT INTO quran_log (date, pages) VALUES (?1, ?2)
              ON CONFLICT(date) DO UPDATE
              SET pages = COALESCE(quran_log.pages, 0) + excluded.pages",
-            params![date, pages],
-        )?;
-        tx.commit()?;
+                params![date, pages],
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
         Ok(())
     }
 
@@ -740,7 +791,7 @@ impl QuranRepo {
         // Sum in Rust so several individually valid finite daily values cannot
         // silently produce an infinite weekly total in SQLite.
         let mut stmt = conn.prepare(
-            "SELECT pages FROM quran_log WHERE date >= ?1 AND date <= ?2 ORDER BY date",
+            "SELECT COALESCE(pages, 0) FROM quran_log WHERE date >= ?1 AND date <= ?2 ORDER BY date",
         )?;
         let rows = stmt.query_map(params![start_date, end_date], |row| row.get::<_, f64>(0))?;
         let mut total = 0.0f64;

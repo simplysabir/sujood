@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use rusqlite::{Connection, OptionalExtension};
 
 /// SQLite `user_version` used by Sujood's versioned schema migrations.
@@ -265,11 +265,6 @@ const MIGRATION_V1: &str = r#"
     END;
 "#;
 
-const MIGRATION_V2: &str = r#"
-    CREATE UNIQUE INDEX uq_dhikr_definition_normalized_name
-        ON dhikr_definitions(lower(trim(name)));
-"#;
-
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     // Foreign keys are a per-connection SQLite setting, so enable and verify
     // them whenever the application initializes a connection.
@@ -280,8 +275,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         bail!("SQLite foreign-key enforcement could not be enabled");
     }
 
-    let mut version: i64 =
-        conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let mut version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version < 0 {
         bail!("Database has an invalid negative schema version: {version}");
     }
@@ -309,9 +303,42 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                 seed_builtins(&tx)?;
             }
             2 => {
-                tx.execute_batch(MIGRATION_V2)?;
+                apply_v2(&tx)?;
             }
             _ => bail!("No database migration is available for schema version {next_version}"),
+        }
+
+        fn apply_v2(conn: &Connection) -> Result<()> {
+            let mut stmt = conn.prepare("SELECT id, name FROM dhikr_definitions ORDER BY id")?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            let mut seen = std::collections::HashSet::new();
+            for (id, name) in rows {
+                let base = name.trim().to_string();
+                let mut candidate = base.clone();
+                if !seen.insert(candidate.to_lowercase()) {
+                    candidate = format!("{base} ({id})");
+                    while !seen.insert(candidate.to_lowercase()) {
+                        candidate.push('_');
+                    }
+                }
+                if candidate != name {
+                    conn.execute(
+                        "UPDATE dhikr_definitions SET name = ?1 WHERE id = ?2",
+                        rusqlite::params![candidate, id],
+                    )?;
+                }
+            }
+            conn.execute(
+                "CREATE UNIQUE INDEX uq_dhikr_definition_normalized_name
+                 ON dhikr_definitions(lower(trim(name)))",
+                [],
+            )?;
+            Ok(())
         }
 
         tx.pragma_update(None, "user_version", next_version)?;

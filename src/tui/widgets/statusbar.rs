@@ -1,17 +1,21 @@
 use ratatui::{
+    Frame,
     layout::{Alignment, Rect},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 use crate::tui::theme;
 
 pub fn render(frame: &mut Frame, area: Rect, message: Option<&str>, is_error: bool) {
     if let Some(message) = message {
-        let style = if is_error { theme::red() } else { theme::green() };
-        let paragraph = Paragraph::new(Line::from(Span::styled(message, style)))
-            .alignment(Alignment::Center);
+        let style = if is_error {
+            theme::red()
+        } else {
+            theme::green()
+        };
+        let paragraph =
+            Paragraph::new(Line::from(Span::styled(message, style))).alignment(Alignment::Center);
         frame.render_widget(paragraph, area);
         return;
     }

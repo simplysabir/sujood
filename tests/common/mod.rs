@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use crate::db::migrations::run_migrations;
+use rusqlite::Connection;
 
 /// Creates an isolated in-memory database with the current schema and seed data.
 pub fn in_memory_database() -> Connection {

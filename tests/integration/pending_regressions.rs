@@ -68,7 +68,10 @@ fn tui_tick_refreshes_daily_state_after_midnight() {
 
     assert_eq!(app.today_str, today.format("%Y-%m-%d").to_string());
     assert_eq!(app.prayers.len(), 5);
-    assert_eq!(app.status_message.as_deref(), Some("New tracking day loaded"));
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("New tracking day loaded")
+    );
 }
 
 #[test]
@@ -122,10 +125,8 @@ fn marking_a_prayer_missed_is_transactional_and_repeat_safe() {
     let date = "2026-11-09";
     PrayerRepo::ensure_today_rows(&conn, date).expect("create daily prayers");
 
-    assert!(PrayerRepo::mark_missed_with_qada(&conn, "fajr", date)
-        .expect("first missed mark"));
-    assert!(!PrayerRepo::mark_missed_with_qada(&conn, "fajr", date)
-        .expect("repeat missed mark"));
+    assert!(PrayerRepo::mark_missed_with_qada(&conn, "fajr", date).expect("first missed mark"));
+    assert!(!PrayerRepo::mark_missed_with_qada(&conn, "fajr", date).expect("repeat missed mark"));
 
     let prayer = PrayerRepo::get_by_date(&conn, date)
         .expect("load prayer rows")
@@ -133,7 +134,10 @@ fn marking_a_prayer_missed_is_transactional_and_repeat_safe() {
         .find(|prayer| prayer.prayer_type.as_str() == "fajr")
         .expect("Fajr row exists");
     assert_eq!(prayer.status.as_str(), "missed");
-    assert_eq!(QadaRepo::count_pending(&conn).expect("count Qada entries"), 1);
+    assert_eq!(
+        QadaRepo::count_pending(&conn).expect("count Qada entries"),
+        1
+    );
 }
 
 #[test]
@@ -155,7 +159,10 @@ fn failed_qada_insert_rolls_back_the_prayer_status_change() {
         .find(|prayer| prayer.prayer_type.as_str() == "fajr")
         .expect("Fajr row exists");
     assert_eq!(prayer.status.as_str(), "pending");
-    assert_eq!(QadaRepo::count_pending(&conn).expect("count Qada entries"), 0);
+    assert_eq!(
+        QadaRepo::count_pending(&conn).expect("count Qada entries"),
+        0
+    );
 }
 
 #[test]
@@ -196,16 +203,14 @@ fn tui_surfaces_database_write_failures_instead_of_silently_dropping_them() {
     )
     .expect("install failure trigger");
 
-    app.handle_key(
-        KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
-        &conn,
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE), &conn);
 
     assert!(app.status_is_error);
-    assert!(app
-        .status_message
-        .as_deref()
-        .is_some_and(|message| message.contains("Could not mark prayer as done")));
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|message| message.contains("Could not mark prayer as done"))
+    );
 }
 
 #[test]
@@ -289,7 +294,10 @@ fn failed_prayer_status_change_rolls_back_new_daily_rows() {
             |row| row.get(0),
         )
         .expect("count created rows");
-    assert_eq!(count, 0, "status update and row creation must roll back together");
+    assert_eq!(
+        count, 0,
+        "status update and row creation must roll back together"
+    );
 }
 
 #[test]

@@ -21,6 +21,29 @@ fn main() -> Result<()> {
     env_logger::init();
 
     let cli = Cli::parse();
+    AppConfig::ensure_data_dir()?;
+    let db_path = AppConfig::db_path()?;
+    if let Some(command) = cli.command.as_ref() {
+        match command {
+            Commands::Backup { path } => {
+                db::backup::recover_interrupted_restore(&db_path)?;
+                db::backup::create_backup(&db_path, path)?;
+                println!("Backup created at {}", path.display());
+                return Ok(());
+            }
+            Commands::Restore { path } => {
+                db::backup::recover_interrupted_restore(&db_path)?;
+                let previous = db::backup::restore_backup(&db_path, path)?;
+                println!("Database restored from {}", path.display());
+                if previous.exists() {
+                    println!("Previous database preserved at {}", previous.display());
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     let (mut config, config_needs_repair) = match AppConfig::load() {
         Ok(config) => (config, false),
         Err(error) if matches!(cli.command.as_ref(), Some(Commands::Setup { .. })) => {
@@ -35,31 +58,10 @@ fn main() -> Result<()> {
         Err(error) => return Err(error).context("Loading config"),
     };
 
-    // Ensure data directory exists and open DB
-    AppConfig::ensure_data_dir()?;
-    let db_path = AppConfig::db_path()?;
-
-    if let Some(command) = cli.command.as_ref() {
-        match command {
-            Commands::Backup { path } => {
-                db::backup::create_backup(&db_path, path)?;
-                println!("Backup created at {}", path.display());
-                return Ok(());
-            }
-            Commands::Restore { path } => {
-                let previous = db::backup::restore_backup(&db_path, path)?;
-                println!("Database restored from {}", path.display());
-                if previous.exists() {
-                    println!("Previous database preserved at {}", previous.display());
-                }
-                return Ok(());
-            }
-            _ => {}
-        }
-    }
-
-    let conn = Connection::open(&db_path)
-        .with_context(|| format!("Opening database at {:?}", db_path))?;
+    db::backup::recover_interrupted_restore(&db_path)?;
+    let _database_lock = db::backup::acquire_database_lock(&db_path)?;
+    let conn =
+        Connection::open(&db_path).with_context(|| format!("Opening database at {:?}", db_path))?;
 
     // Enable WAL mode for better concurrent access
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;

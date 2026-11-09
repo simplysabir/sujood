@@ -1,20 +1,15 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
-    Frame,
 };
 
 use crate::models::{DailyStats, Streak};
 use crate::tui::theme;
 
-pub fn render(
-    frame: &mut Frame,
-    area: Rect,
-    streak: &Streak,
-    weekly: &[DailyStats],
-) {
+pub fn render(frame: &mut Frame, area: Rect, streak: &Streak, weekly: &[DailyStats]) {
     let block = Block::default()
         .title(Span::styled(" Streak ", theme::gold()))
         .borders(Borders::ALL)
@@ -69,14 +64,21 @@ pub fn render(
         ),
     ]);
 
-    let meta_line = Line::from(vec![
-        Span::styled(
-            format!("  Best: {}  ·  Week: {}/7", streak.best, completed_this_week),
-            theme::dim(),
+    let meta_line = Line::from(vec![Span::styled(
+        format!(
+            "  Best: {}  ·  Week: {}/7",
+            streak.best, completed_this_week
         ),
-    ]);
+        theme::dim(),
+    )]);
 
-    let text = vec![Line::from(""), dots_line, streak_line, Line::from(""), meta_line];
+    let text = vec![
+        Line::from(""),
+        dots_line,
+        streak_line,
+        Line::from(""),
+        meta_line,
+    ];
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, area);
 }

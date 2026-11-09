@@ -1,7 +1,7 @@
 use std::sync::mpsc;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::thread;
 use std::time::Duration;
@@ -38,7 +38,9 @@ impl EventHandler {
                 let polled = match event::poll(timeout) {
                     Ok(polled) => polled,
                     Err(error) => {
-                        let _ = tx.send(Event::Error(format!("Terminal event polling failed: {error}")));
+                        let _ = tx.send(Event::Error(format!(
+                            "Terminal event polling failed: {error}"
+                        )));
                         break;
                     }
                 };
@@ -51,7 +53,8 @@ impl EventHandler {
                         }
                         Ok(_) => {}
                         Err(error) => {
-                            let _ = tx.send(Event::Error(format!("Terminal event read failed: {error}")));
+                            let _ = tx
+                                .send(Event::Error(format!("Terminal event read failed: {error}")));
                             break;
                         }
                     }

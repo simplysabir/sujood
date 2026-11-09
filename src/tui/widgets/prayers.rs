@@ -1,20 +1,23 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem},
-    Frame,
 };
 
 use crate::models::{Prayer, PrayerStatus};
 use crate::tui::theme;
 
-pub fn render(frame: &mut Frame, area: Rect, prayers: &[Prayer], focused_idx: usize, focused: bool) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    prayers: &[Prayer],
+    focused_idx: usize,
+    focused: bool,
+) {
     let block = Block::default()
-        .title(Span::styled(
-            " Prayers ",
-            theme::gold(),
-        ))
+        .title(Span::styled(" Prayers ", theme::gold()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(if focused {

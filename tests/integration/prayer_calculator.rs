@@ -18,24 +18,14 @@ fn assert_shifted_by_minutes(
 #[test]
 fn prayer_times_are_converted_using_the_configured_fixed_utc_offset() {
     let date = NaiveDate::from_ymd_opt(2026, 1, 15).expect("valid test date");
-    let utc = PrayerCalculator::new(
-        19.0760,
-        72.8777,
-        "Karachi",
-        "Hanafi",
-        0,
-    )
-    .expect("valid UTC calculator");
-    let india = PrayerCalculator::new(
-        19.0760,
-        72.8777,
-        "Karachi",
-        "Hanafi",
-        330,
-    )
-    .expect("valid UTC+05:30 calculator");
+    let utc = PrayerCalculator::new(19.0760, 72.8777, "Karachi", "Hanafi", 0)
+        .expect("valid UTC calculator");
+    let india = PrayerCalculator::new(19.0760, 72.8777, "Karachi", "Hanafi", 330)
+        .expect("valid UTC+05:30 calculator");
 
-    let utc_times = utc.times_for_date(date).expect("calculate UTC prayer times");
+    let utc_times = utc
+        .times_for_date(date)
+        .expect("calculate UTC prayer times");
     let local_times = india
         .times_for_date(date)
         .expect("calculate local prayer times");
@@ -50,20 +40,8 @@ fn prayer_times_are_converted_using_the_configured_fixed_utc_offset() {
 
 #[test]
 fn calculator_rejects_unknown_calculation_methods_and_madhabs() {
-    let unknown_method = PrayerCalculator::new(
-        19.0760,
-        72.8777,
-        "NotARealMethod",
-        "Hanafi",
-        300,
-    );
-    let unknown_madhab = PrayerCalculator::new(
-        19.0760,
-        72.8777,
-        "Karachi",
-        "NotAMadhab",
-        300,
-    );
+    let unknown_method = PrayerCalculator::new(19.0760, 72.8777, "NotARealMethod", "Hanafi", 300);
+    let unknown_madhab = PrayerCalculator::new(19.0760, 72.8777, "Karachi", "NotAMadhab", 300);
 
     assert!(unknown_method.is_err());
     assert!(unknown_madhab.is_err());

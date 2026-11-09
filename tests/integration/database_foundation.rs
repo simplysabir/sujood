@@ -68,8 +68,7 @@ fn dhikr_upsert_keeps_one_log_per_definition_and_date() {
     DhikrRepo::upsert_log(&conn, definition.id, "2026-11-09", 2, true)
         .expect("update existing log");
 
-    let logs = DhikrRepo::get_log_for_date(&conn, "2026-11-09")
-        .expect("load daily dhikr logs");
+    let logs = DhikrRepo::get_log_for_date(&conn, "2026-11-09").expect("load daily dhikr logs");
 
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].count, 2);
@@ -86,8 +85,7 @@ fn user_tracking_data_survives_database_reopening() {
         run_migrations(&conn).expect("initialize database");
 
         PrayerRepo::ensure_today_rows(&conn, "2026-11-09").expect("create prayer rows");
-        PrayerRepo::mark_status(&conn, "fajr", "2026-11-09", "done")
-            .expect("mark Fajr complete");
+        PrayerRepo::mark_status(&conn, "fajr", "2026-11-09", "done").expect("mark Fajr complete");
         QuranRepo::log_pages(&conn, "2026-11-09", 2.5).expect("log Quran pages");
         QadaRepo::add_entry(&conn, "asr", "2026-11-08").expect("add a Qada record");
 
@@ -108,8 +106,7 @@ fn user_tracking_data_survives_database_reopening() {
         .expect("Fajr row exists");
     let pages = QuranRepo::get_today(&conn, "2026-11-09").expect("reload Quran total");
     let qada_count = QadaRepo::count_pending(&conn).expect("reload Qada count");
-    let adhkar_logs = DhikrRepo::get_log_for_date(&conn, "2026-11-09")
-        .expect("reload Adhkar logs");
+    let adhkar_logs = DhikrRepo::get_log_for_date(&conn, "2026-11-09").expect("reload Adhkar logs");
 
     assert_eq!(fajr.status.as_str(), "done");
     assert!((pages - 2.5).abs() < f64::EPSILON);

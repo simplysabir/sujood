@@ -2,7 +2,12 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "sujood", version, author, about = "A beautiful terminal companion for Islamic practice tracking")]
+#[command(
+    name = "sujood",
+    version,
+    author,
+    about = "A beautiful terminal companion for Islamic practice tracking"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -71,6 +76,9 @@ pub enum QadaCommands {
     Add {
         /// Prayer name
         prayer: String,
+        /// Original missed date (YYYY-MM-DD)
+        #[arg(long)]
+        date: Option<String>,
     },
 }
 

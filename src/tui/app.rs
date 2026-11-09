@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, FixedOffset};
 use crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
-    Frame,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -188,11 +188,9 @@ impl App {
         {
             Ok(next_prayer) => {
                 self.next_prayer_info = next_prayer;
-                if self
-                    .status_message
-                    .as_deref()
-                    .is_some_and(|message| message.starts_with("Unable to refresh prayer countdown:"))
-                {
+                if self.status_message.as_deref().is_some_and(|message| {
+                    message.starts_with("Unable to refresh prayer countdown:")
+                }) {
                     self.status_message = None;
                     self.status_is_error = false;
                 }
@@ -239,10 +237,18 @@ impl App {
             Ok(now) => {
                 if format_date(now.date_naive()) != self.today_str {
                     self.tick_at(conn, now);
-                    if format_date(now.date_naive()) != self.today_str {
+                    if format_date(now.date_naive()) != self.today_str && key_mutates_data(key) {
                         // Do not let a user action be written to a stale date if
                         // refreshing the new day's dashboard failed.
                         return;
+                    }
+
+                    fn key_mutates_data(key: crossterm::event::KeyEvent) -> bool {
+                        match key.code {
+                            KeyCode::Char('m') | KeyCode::Char('M') | KeyCode::Char('d') => true,
+                            KeyCode::Enter => true,
+                            _ => false,
+                        }
                     }
                 }
             }
@@ -410,12 +416,7 @@ impl App {
             return;
         };
 
-        match PrayerRepo::mark_status(
-            conn,
-            &prayer_type,
-            &self.today_str,
-            "done",
-        ) {
+        match PrayerRepo::mark_status(conn, &prayer_type, &self.today_str, "done") {
             Ok(()) => self.refresh_after_action(conn, "Prayer marked as done"),
             Err(error) => self.set_error("Could not mark prayer as done", error),
         }
@@ -433,11 +434,7 @@ impl App {
             return;
         };
 
-        match PrayerRepo::mark_missed_with_qada(
-            conn,
-            &prayer_type,
-            &self.today_str,
-        ) {
+        match PrayerRepo::mark_missed_with_qada(conn, &prayer_type, &self.today_str) {
             Ok(added) => {
                 let message = if added {
                     "Prayer marked missed and added to Qada"
@@ -502,10 +499,7 @@ impl App {
         let area = frame.area();
 
         // Clear background
-        frame.render_widget(
-            Block::default().style(theme::base()),
-            area,
-        );
+        frame.render_widget(Block::default().style(theme::base()), area);
 
         let outer_chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -541,9 +535,9 @@ impl App {
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(9),  // prayers
-                Constraint::Length(8),  // adhkar
-                Constraint::Length(3),  // quran
+                Constraint::Length(9), // prayers
+                Constraint::Length(8), // adhkar
+                Constraint::Length(3), // quran
             ])
             .split(left);
 
@@ -579,9 +573,9 @@ impl App {
         let right_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(9),  // next prayer
-                Constraint::Length(7),  // streak
-                Constraint::Min(0),     // qada
+                Constraint::Length(9), // next prayer
+                Constraint::Length(7), // streak
+                Constraint::Min(0),    // qada
             ])
             .split(right);
 
@@ -632,10 +626,7 @@ impl App {
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Quran today:       ", theme::dim()),
-                Span::styled(
-                    format!("{} pages", self.quran_today),
-                    theme::amber(),
-                ),
+                Span::styled(format!("{} pages", self.quran_today), theme::amber()),
             ]),
             Line::from(vec![
                 Span::styled("  Quran this week:   ", theme::dim()),
@@ -670,7 +661,10 @@ impl App {
             all_lines.push(Line::from(vec![
                 icon,
                 Span::styled(
-                    format!("{}  {}/{}", stat.date, stat.prayers_done, stat.prayers_total),
+                    format!(
+                        "{}  {}/{}",
+                        stat.date, stat.prayers_done, stat.prayers_total
+                    ),
                     theme::dim(),
                 ),
             ]));
@@ -762,8 +756,11 @@ impl App {
             Line::from(""),
             Line::from(vec![
                 Span::styled("  Pages read today: ", theme::dim()),
-                Span::styled(self.input_buffer.as_str(), theme::gold().add_modifier(Modifier::BOLD)),
-                Span::styled("█", theme::amber()),  // block cursor
+                Span::styled(
+                    self.input_buffer.as_str(),
+                    theme::gold().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("█", theme::amber()), // block cursor
             ]),
             Line::from(""),
             Line::from(Span::styled(
@@ -836,10 +833,7 @@ impl App {
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  [any key] close",
-            theme::dim(),
-        )));
+        lines.push(Line::from(Span::styled("  [any key] close", theme::dim())));
 
         let block = Block::default()
             .title(Span::styled(" Qada Queue ", theme::gold()))

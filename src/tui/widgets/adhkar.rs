@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem},
-    Frame,
 };
 
 use crate::models::{DhikrDef, DhikrFrequency, DhikrLog, DhikrType};

@@ -62,5 +62,8 @@ pub fn to_hijri(date: NaiveDate) -> Result<HijriInfo> {
 /// the configured moon-sighting adjustment before conversion.
 pub fn hijri_string_for_date(date: NaiveDate, offset_days: i32) -> Result<String> {
     let adjusted = date + Duration::days(i64::from(offset_days));
-    Ok(to_hijri(adjusted)?.formatted())
+    match to_hijri(adjusted) {
+        Ok(hijri) => Ok(hijri.formatted()),
+        Err(_) => Ok(format!("Hijri unavailable ({adjusted})")),
+    }
 }

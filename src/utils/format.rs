@@ -31,7 +31,10 @@ pub fn format_pages(pages: f64) -> String {
     if pages == pages.floor() {
         format!("{}", pages as i64)
     } else {
-        format!("{pages:.6}").trim_end_matches('0').trim_end_matches('.').to_string()
+        format!("{pages:.6}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 

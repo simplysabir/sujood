@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use crate::{
     common::in_memory_database,
     db::{
-        migrations::{run_migrations, CURRENT_SCHEMA_VERSION},
+        migrations::{CURRENT_SCHEMA_VERSION, run_migrations},
         repository::{CacheRepo, CachedTimes, DhikrRepo, PrayerRepo, QuranRepo, StatsRepo},
     },
     prayer_times::PrayerCalculator,
@@ -170,9 +170,8 @@ fn v0_migration_preserves_existing_data_and_builds_weekly_summaries() {
         .expect("legacy cache row receives a safe empty fingerprint");
     assert!(old_cache_fingerprint.is_empty());
 
-    let configured_calculator =
-        PrayerCalculator::new(19.0760, 72.8777, "Karachi", "Hanafi", 330)
-            .expect("valid configured calculator");
+    let configured_calculator = PrayerCalculator::new(19.0760, 72.8777, "Karachi", "Hanafi", 330)
+        .expect("valid configured calculator");
     assert!(
         CacheRepo::get_times_for_date(
             &conn,
@@ -203,7 +202,11 @@ fn v0_migration_preserves_existing_data_and_builds_weekly_summaries() {
     assert_eq!(quran_pages, 2.5);
 
     let qada_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM qada_queue WHERE completed = 0", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM qada_queue WHERE completed = 0",
+            [],
+            |row| row.get(0),
+        )
         .expect("legacy Qada remains");
     assert_eq!(qada_count, 1);
 
@@ -239,14 +242,20 @@ fn v0_migration_preserves_existing_data_and_builds_weekly_summaries() {
     assert_eq!(old_daily_rows, 2);
 
     let setup_flag: String = conn
-        .query_row("SELECT value FROM app_meta WHERE key = 'setup_done'", [], |row| row.get(0))
+        .query_row(
+            "SELECT value FROM app_meta WHERE key = 'setup_done'",
+            [],
+            |row| row.get(0),
+        )
         .expect("setup flag remains");
     assert_eq!(setup_flag, "1");
 
     // Applying the same migration entry point again must not duplicate data.
     run_migrations(&conn).expect("re-running migrations is safe");
     let weekly_rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM dhikr_weekly_log", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM dhikr_weekly_log", [], |row| {
+            row.get(0)
+        })
         .expect("count weekly summaries");
     assert_eq!(weekly_rows, 2);
 }
@@ -266,14 +275,17 @@ fn migrations_enable_foreign_keys_and_reject_unknown_future_schema_versions() {
         );",
     )
     .expect("create foreign-key probe table");
-    let orphan_insert = conn.execute(
-        "INSERT INTO fk_probe (dhikr_id) VALUES (999_999)",
-        [],
-    );
-    assert!(
-        orphan_insert.is_err(),
-        "SQLite must reject an orphan reference when foreign keys are enabled"
-    );
+    let orphan_insert = conn.execute("INSERT INTO fk_probe (dhikr_id) VALUES (?1)", [999_999_i64]);
+    assert!(matches!(
+        orphan_insert,
+        Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                ..
+            },
+            _
+        ))
+    ));
 
     let future = Connection::open_in_memory().expect("open future-version database");
     future
@@ -327,7 +339,9 @@ fn failed_schema_migration_rolls_back_ddl_and_keeps_user_version_unchanged() {
             .expect("collect cache columns")
     };
     assert!(
-        !cache_columns.iter().any(|column| column == "config_fingerprint"),
+        !cache_columns
+            .iter()
+            .any(|column| column == "config_fingerprint"),
         "the failed ALTER TABLE must be rolled back"
     );
 
@@ -415,7 +429,9 @@ fn migration_refuses_weekly_aggregates_that_exceed_the_supported_counter_range()
             .expect("collect cache column names")
     };
     assert!(
-        !cache_columns.iter().any(|column| column == "config_fingerprint"),
+        !cache_columns
+            .iter()
+            .any(|column| column == "config_fingerprint"),
         "failed migration must roll back DDL"
     );
 
@@ -446,7 +462,10 @@ fn database_integrity_guards_reject_invalid_values_without_blocking_valid_update
          VALUES (?1, '2026-11-09', 1.5, 0)",
         [definition.id],
     );
-    assert!(fractional_count.is_err(), "fractional repetition counts must be rejected");
+    assert!(
+        fractional_count.is_err(),
+        "fractional repetition counts must be rejected"
+    );
 
     let zero_target = conn.execute(
         "INSERT INTO dhikr_definitions
@@ -454,7 +473,10 @@ fn database_integrity_guards_reject_invalid_values_without_blocking_valid_update
          VALUES ('Invalid zero target', 'counter', 'weekly', 0, 'custom', 50, 1)",
         [],
     );
-    assert!(zero_target.is_err(), "non-positive targets must be rejected");
+    assert!(
+        zero_target.is_err(),
+        "non-positive targets must be rejected"
+    );
 
     DhikrRepo::add_custom(&conn, "Weekly Integrity Probe", "counter", 10, "weekly")
         .expect("create weekly definition for period constraint test");
@@ -466,7 +488,10 @@ fn database_integrity_guards_reject_invalid_values_without_blocking_valid_update
          VALUES (?1, '2026-11-03', 1, 0)",
         [weekly_definition.id],
     );
-    assert!(invalid_week_start.is_err(), "weekly records must start on Monday");
+    assert!(
+        invalid_week_start.is_err(),
+        "weekly records must start on Monday"
+    );
 
     let daily_definition_in_weekly_table = conn.execute(
         "INSERT INTO dhikr_weekly_log (dhikr_id, week_start, count, completed)
@@ -482,7 +507,10 @@ fn database_integrity_guards_reject_invalid_values_without_blocking_valid_update
         "INSERT INTO quran_log (date, pages) VALUES ('2026-11-09', -0.5)",
         [],
     );
-    assert!(invalid_quran.is_err(), "negative Quran totals must be rejected");
+    assert!(
+        invalid_quran.is_err(),
+        "negative Quran totals must be rejected"
+    );
 
     conn.execute(
         "INSERT INTO qada_queue (prayer_type, original_date, completed)
@@ -495,7 +523,10 @@ fn database_integrity_guards_reject_invalid_values_without_blocking_valid_update
          VALUES ('asr', '2026-11-07', 0)",
         [],
     );
-    assert!(duplicate_qada.is_err(), "the database must reject duplicate Qada rows");
+    assert!(
+        duplicate_qada.is_err(),
+        "the database must reject duplicate Qada rows"
+    );
 
     conn.execute(
         "INSERT INTO qada_queue (prayer_type, original_date, completed)
@@ -508,7 +539,10 @@ fn database_integrity_guards_reject_invalid_values_without_blocking_valid_update
          WHERE prayer_type = 'fajr' AND original_date = '2026-11-07'",
         [],
     );
-    assert!(duplicate_qada_update.is_err(), "updates must not create duplicate Qada rows");
+    assert!(
+        duplicate_qada_update.is_err(),
+        "updates must not create duplicate Qada rows"
+    );
 
     assert!(
         DhikrRepo::upsert_log(&conn, definition.id, "2026-11-09", 1, true).is_ok(),
@@ -584,11 +618,10 @@ fn weekly_checkbox_is_shared_throughout_the_week_but_daily_dhikr_stays_date_scop
 
     DhikrRepo::upsert_log(&conn, weekly.id, "2026-11-03", 1, true)
         .expect("complete weekly checkbox");
-    DhikrRepo::upsert_log(&conn, daily.id, "2026-11-03", 1, true)
-        .expect("complete daily checkbox");
+    DhikrRepo::upsert_log(&conn, daily.id, "2026-11-03", 1, true).expect("complete daily checkbox");
 
-    let later_this_week = DhikrRepo::get_log_for_date(&conn, "2026-11-08")
-        .expect("load Sunday progress");
+    let later_this_week =
+        DhikrRepo::get_log_for_date(&conn, "2026-11-08").expect("load Sunday progress");
     let weekly_log = later_this_week
         .iter()
         .find(|log| log.dhikr_id == weekly.id)
@@ -600,8 +633,8 @@ fn weekly_checkbox_is_shared_throughout_the_week_but_daily_dhikr_stays_date_scop
         "daily progress must not leak into another date"
     );
 
-    let next_week = DhikrRepo::get_log_for_date(&conn, "2026-11-09")
-        .expect("load next week progress");
+    let next_week =
+        DhikrRepo::get_log_for_date(&conn, "2026-11-09").expect("load next week progress");
     assert!(next_week.iter().all(|log| log.dhikr_id != weekly.id));
 }
 
@@ -610,15 +643,12 @@ fn prayer_cache_is_reused_only_for_an_identical_calculation_configuration() {
     let conn = in_memory_database();
     let base = PrayerCalculator::new(19.0760, 72.8777, "Karachi", "Hanafi", 330)
         .expect("create base calculator");
-    let different_location =
-        PrayerCalculator::new(28.6139, 77.2090, "Karachi", "Hanafi", 330)
-            .expect("create different-location calculator");
-    let different_method =
-        PrayerCalculator::new(19.0760, 72.8777, "Egyptian", "Hanafi", 330)
-            .expect("create different-method calculator");
-    let different_madhab =
-        PrayerCalculator::new(19.0760, 72.8777, "Karachi", "Shafi", 330)
-            .expect("create different-madhab calculator");
+    let different_location = PrayerCalculator::new(28.6139, 77.2090, "Karachi", "Hanafi", 330)
+        .expect("create different-location calculator");
+    let different_method = PrayerCalculator::new(19.0760, 72.8777, "Egyptian", "Hanafi", 330)
+        .expect("create different-method calculator");
+    let different_madhab = PrayerCalculator::new(19.0760, 72.8777, "Karachi", "Shafi", 330)
+        .expect("create different-madhab calculator");
     let different_offset = PrayerCalculator::new(19.0760, 72.8777, "Karachi", "Hanafi", 300)
         .expect("create different-offset calculator");
 
@@ -640,13 +670,8 @@ fn prayer_cache_is_reused_only_for_an_identical_calculation_configuration() {
         maghrib: chrono::NaiveTime::from_hms_opt(18, 0, 0).unwrap(),
         isha: chrono::NaiveTime::from_hms_opt(19, 15, 0).unwrap(),
     };
-    CacheRepo::store_times(
-        &conn,
-        "2026-11-09",
-        &base_fingerprint,
-        &times,
-    )
-    .expect("store cache for base configuration");
+    CacheRepo::store_times(&conn, "2026-11-09", &base_fingerprint, &times)
+        .expect("store cache for base configuration");
 
     assert!(
         CacheRepo::get_times_for_date(&conn, "2026-11-09", &base_fingerprint)
@@ -702,7 +727,10 @@ fn weekly_quran_totals_reject_invalid_ranges_and_numeric_overflow() {
     );
 
     let invalid_range = QuranRepo::get_weekly_total(&conn, "2026-11-09", "2026-11-02");
-    assert!(invalid_range.is_err(), "reversed Quran ranges must be rejected");
+    assert!(
+        invalid_range.is_err(),
+        "reversed Quran ranges must be rejected"
+    );
 
     let overflow_db = in_memory_database();
     let largest_finite = f64::MAX;

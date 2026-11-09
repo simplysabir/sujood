@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveTime};
 use rusqlite::Connection;
 use salah::prelude::*;
@@ -79,9 +79,8 @@ impl PrayerCalculator {
         let offset = FixedOffset::east_opt(self.tz_offset_minutes * 60)
             .ok_or_else(|| anyhow!("Invalid timezone offset: {}", self.tz_offset_minutes))?;
 
-        let to_local = |utc: chrono::DateTime<chrono::Utc>| -> NaiveTime {
-            utc.with_timezone(&offset).time()
-        };
+        let to_local =
+            |utc: chrono::DateTime<chrono::Utc>| -> NaiveTime { utc.with_timezone(&offset).time() };
 
         Ok(PrayerTimesLocal {
             fajr: to_local(times.time(Prayer::Fajr)),
@@ -141,9 +140,7 @@ impl PrayerCalculator {
         let date_str = date.format("%Y-%m-%d").to_string();
         let fingerprint = self.cache_fingerprint();
 
-        if let Some(cached) =
-            CacheRepo::get_times_for_date(conn, &date_str, &fingerprint)?
-        {
+        if let Some(cached) = CacheRepo::get_times_for_date(conn, &date_str, &fingerprint)? {
             return Ok(PrayerTimesLocal {
                 fajr: cached.fajr,
                 sunrise: cached.sunrise,
