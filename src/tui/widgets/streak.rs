@@ -1,20 +1,15 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Modifier,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
-    Frame,
 };
 
 use crate::models::{DailyStats, Streak};
 use crate::tui::theme;
 
-pub fn render(
-    frame: &mut Frame,
-    area: Rect,
-    streak: &Streak,
-    weekly: &[DailyStats],
-) {
+pub fn render(frame: &mut Frame, area: Rect, streak: &Streak, weekly: &[DailyStats]) {
     let block = Block::default()
         .title(Span::styled(" Streak ", theme::gold()))
         .borders(Borders::ALL)
@@ -28,12 +23,16 @@ pub fn render(
     // Map daily stats to dots
     for i in 0..7 {
         let (dot, style) = if i < weekly.len() {
-            let d = &weekly[i];
-            match d.prayers_done {
-                5 => ("●", theme::green().add_modifier(Modifier::BOLD)),
-                3 | 4 => ("●", theme::amber()),
-                1 | 2 => ("◑", theme::amber()),
-                _ => ("○", theme::dim()),
+            let day = &weekly[i];
+            if day.prayers_total == 0 {
+                ("·", theme::dim())
+            } else {
+                match day.prayers_done {
+                    5 => ("●", theme::green().add_modifier(Modifier::BOLD)),
+                    3 | 4 => ("●", theme::amber()),
+                    1 | 2 => ("◑", theme::amber()),
+                    _ => ("○", theme::dim()),
+                }
             }
         } else {
             ("·", theme::dim())
@@ -42,7 +41,7 @@ pub fn render(
         dot_spans.push(Span::styled("  ", theme::dim()));
     }
 
-    let _dots_line = Line::from(dot_spans);
+    let dots_line = Line::from(dot_spans);
 
     // Streak bar (12 chars wide, filled proportional to streak/30)
     let bar_len = 12usize;
@@ -51,7 +50,10 @@ pub fn render(
     let empty = bar_len.saturating_sub(filled);
     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
 
-    let completed_this_week = weekly.iter().filter(|d| d.prayers_done >= 5).count();
+    let completed_this_week = weekly
+        .iter()
+        .filter(|day| day.prayers_total == 5 && day.prayers_done == 5)
+        .count();
 
     let streak_line = Line::from(vec![
         Span::styled("  ", theme::dim()),
@@ -62,14 +64,21 @@ pub fn render(
         ),
     ]);
 
-    let meta_line = Line::from(vec![
-        Span::styled(
-            format!("  Best: {}  ·  Week: {}/7", streak.best, completed_this_week),
-            theme::dim(),
+    let meta_line = Line::from(vec![Span::styled(
+        format!(
+            "  Best: {}  ·  Week: {}/7",
+            streak.best, completed_this_week
         ),
-    ]);
+        theme::dim(),
+    )]);
 
-    let text = vec![Line::from(""), streak_line, Line::from(""), meta_line];
+    let text = vec![
+        Line::from(""),
+        dots_line,
+        streak_line,
+        Line::from(""),
+        meta_line,
+    ];
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, area);
 }

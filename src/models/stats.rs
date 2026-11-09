@@ -38,9 +38,6 @@ impl WeeklyGrid {
     }
 
     pub fn days_with_full_prayers(&self) -> u32 {
-        self.days
-            .iter()
-            .filter(|d| d.prayers_done >= 5)
-            .count() as u32
+        self.days.iter().filter(|d| d.prayers_done >= 5).count() as u32
     }
 }
